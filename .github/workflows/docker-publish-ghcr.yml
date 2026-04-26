@@ -18,7 +18,7 @@ on:
 
 jobs:
   build_and_push:
-    name: Build and push multi-arch image
+    name: Build and push amd64 image
     runs-on: ubuntu-latest
 
     permissions:
@@ -38,9 +38,6 @@ jobs:
           fi
           echo "$TAG" > internal/build/VERSION
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -55,7 +52,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           tags: |
             ${{ github.event_name == 'workflow_dispatch' && format('ghcr.io/{0}/axonhub:{1}', github.repository_owner, inputs.tag) || format('ghcr.io/{0}/axonhub:{1}', github.repository_owner, github.ref_name) }}
