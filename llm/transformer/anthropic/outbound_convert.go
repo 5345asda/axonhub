@@ -441,12 +441,23 @@ func extractUserContentBlocks(msg llm.Message) []MessageContentBlock {
 		})
 	} else if len(msg.Content.MultipleContent) > 0 {
 		for _, part := range msg.Content.MultipleContent {
-			if part.Type == "text" && part.Text != nil {
-				blocks = append(blocks, MessageContentBlock{
-					Type:         "text",
-					Text:         part.Text,
-					CacheControl: convertToAnthropicCacheControl(part.CacheControl),
-				})
+			switch part.Type {
+			case "text":
+				if part.Text != nil {
+					blocks = append(blocks, MessageContentBlock{
+						Type:         "text",
+						Text:         part.Text,
+						CacheControl: convertToAnthropicCacheControl(part.CacheControl),
+					})
+				}
+			case "image_url":
+				if block, ok := convertImageURLToAnthropicBlock(part); ok {
+					blocks = append(blocks, block)
+				}
+			case "document":
+				if block, ok := convertDocumentToAnthropicBlock(part); ok {
+					blocks = append(blocks, block)
+				}
 			}
 		}
 	}
@@ -664,6 +675,43 @@ func convertImageURLToAnthropicBlock(part llm.MessageContentPart) (MessageConten
 	}, true
 }
 
+func convertDocumentToAnthropicBlock(part llm.MessageContentPart) (MessageContentBlock, bool) {
+	if part.Document == nil || part.Document.URL == "" {
+		return MessageContentBlock{}, false
+	}
+
+	url := part.Document.URL
+	if parsed := xurl.ParseDataURL(url); parsed != nil && parsed.IsBase64 {
+		mediaType := part.Document.MIMEType
+		if mediaType == "" {
+			mediaType = parsed.MediaType
+		}
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+
+		return MessageContentBlock{
+			Type: "document",
+			Source: &ImageSource{
+				Type:      "base64",
+				MediaType: mediaType,
+				Data:      parsed.Data,
+			},
+			CacheControl: convertToAnthropicCacheControl(part.CacheControl),
+		}, true
+	}
+
+	return MessageContentBlock{
+		Type: "document",
+		Source: &ImageSource{
+			Type:      "url",
+			MediaType: part.Document.MIMEType,
+			URL:       part.Document.URL,
+		},
+		CacheControl: convertToAnthropicCacheControl(part.CacheControl),
+	}, true
+}
+
 // convertToAnthropicTrivialContent converts llm.MessageContent to Anthropic MessageContent format.
 func convertToAnthropicTrivialContent(content llm.MessageContent) *MessageContent {
 	if content.Content != nil {
@@ -685,6 +733,10 @@ func convertToAnthropicTrivialContent(content llm.MessageContent) *MessageConten
 				}
 			case "image_url":
 				if block, ok := convertImageURLToAnthropicBlock(part); ok {
+					blocks = append(blocks, block)
+				}
+			case "document":
+				if block, ok := convertDocumentToAnthropicBlock(part); ok {
 					blocks = append(blocks, block)
 				}
 			}
@@ -819,6 +871,10 @@ func convertMultiplePartContent(msg llm.Message) (MessageContent, bool) {
 
 					blocks = append(blocks, block)
 				}
+			}
+		case "document":
+			if block, ok := convertDocumentToAnthropicBlock(part); ok {
+				blocks = append(blocks, block)
 			}
 		}
 	}

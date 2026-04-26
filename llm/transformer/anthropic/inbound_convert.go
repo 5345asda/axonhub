@@ -47,6 +47,46 @@ func convertImageSourceToLLMImageURLPart(source *ImageSource, cacheControl *Cach
 	return part, true
 }
 
+func convertDocumentSourceToLLMDocumentPart(source *ImageSource, cacheControl *CacheControl) (llm.MessageContentPart, bool) {
+	if source == nil {
+		return llm.MessageContentPart{}, false
+	}
+
+	part := llm.MessageContentPart{
+		Type:         "document",
+		CacheControl: convertToLLMCacheControl(cacheControl),
+	}
+
+	if source.Type == "base64" {
+		if source.Data == "" {
+			return llm.MessageContentPart{}, false
+		}
+
+		mediaType := source.MediaType
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+
+		part.Document = &llm.DocumentURL{
+			URL:      xurl.BuildDataURL(mediaType, source.Data, true),
+			MIMEType: mediaType,
+		}
+
+		return part, true
+	}
+
+	if source.URL == "" {
+		return llm.MessageContentPart{}, false
+	}
+
+	part.Document = &llm.DocumentURL{
+		URL:      source.URL,
+		MIMEType: source.MediaType,
+	}
+
+	return part, true
+}
+
 // convertToLLMRequest converts Anthropic MessageRequest to ChatCompletionRequest.
 //
 //nolint:maintidx // TODO: fix.
@@ -162,6 +202,11 @@ func convertToLLMRequest(anthropicReq *MessageRequest) (*llm.Request, error) {
 						contentParts = append(contentParts, part)
 						hasContent = true
 					}
+				case "document":
+					if part, ok := convertDocumentSourceToLLMDocumentPart(block.Source, block.CacheControl); ok {
+						contentParts = append(contentParts, part)
+						hasContent = true
+					}
 				case "tool_result":
 					hasToolResult = true
 					// TODO: support other result types
@@ -192,6 +237,10 @@ func convertToLLMRequest(anthropicReq *MessageRequest) (*llm.Request, error) {
 									})
 								case "image":
 									if part, ok := convertImageSourceToLLMImageURLPart(contentBlock.Source, contentBlock.CacheControl); ok {
+										toolContentParts = append(toolContentParts, part)
+									}
+								case "document":
+									if part, ok := convertDocumentSourceToLLMDocumentPart(contentBlock.Source, contentBlock.CacheControl); ok {
 										toolContentParts = append(toolContentParts, part)
 									}
 								}
@@ -409,11 +458,11 @@ func convertToAnthropicResponse(chatResp *llm.Response) *Message {
 					Type:     "thinking",
 					Thinking: thinkingContent,
 				}
-			if message.ReasoningSignature != nil {
-				thinkingBlock.Signature = message.ReasoningSignature
-			} else {
-				thinkingBlock.Signature = lo.ToPtr(generateSignature())
-			}
+				if message.ReasoningSignature != nil {
+					thinkingBlock.Signature = message.ReasoningSignature
+				} else {
+					thinkingBlock.Signature = lo.ToPtr(generateSignature())
+				}
 
 				contentBlocks = append(contentBlocks, thinkingBlock)
 			}
@@ -461,6 +510,29 @@ func convertToAnthropicResponse(chatResp *llm.Response) *Message {
 									Source: &ImageSource{
 										Type: "url",
 										URL:  part.ImageURL.URL,
+									},
+								})
+							}
+						}
+					case "document":
+						if part.Document != nil && part.Document.URL != "" {
+							url := part.Document.URL
+							if parsed := xurl.ParseDataURL(url); parsed != nil {
+								contentBlocks = append(contentBlocks, MessageContentBlock{
+									Type: "document",
+									Source: &ImageSource{
+										Type:      "base64",
+										MediaType: parsed.MediaType,
+										Data:      parsed.Data,
+									},
+								})
+							} else {
+								contentBlocks = append(contentBlocks, MessageContentBlock{
+									Type: "document",
+									Source: &ImageSource{
+										Type:      "url",
+										MediaType: part.Document.MIMEType,
+										URL:       part.Document.URL,
 									},
 								})
 							}
