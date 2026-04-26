@@ -23,7 +23,7 @@ func TestMessageContentBlockMarshalJSON_PreservesNilThinkingSignature(t *testing
 		Type: "thinking",
 	})
 	require.NoError(t, err)
-	require.JSONEq(t, `{"type":"thinking","thinking":"","signature":""}`, string(data))
+	require.JSONEq(t, `{"type":"thinking","thinking":""}`, string(data))
 }
 
 func TestStreamDeltaMarshalJSON_OmitsSignatureForThinkingDelta(t *testing.T) {

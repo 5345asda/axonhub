@@ -20,9 +20,10 @@ func (t *InboundTransformer) TransformStream(
 ) (streams.Stream[*httpclient.StreamEvent], error) {
 	// Create a custom stream that handles the stateful transformation
 	return &anthropicInboundStream{
-		source:    stream,
-		ctx:       ctx,
-		toolCalls: make(map[int]*llm.ToolCall),
+		source:        stream,
+		ctx:           ctx,
+		signatureMode: t.signatureMode(ctx),
+		toolCalls:     make(map[int]*llm.ToolCall),
 	}, nil
 }
 
@@ -32,6 +33,7 @@ func (t *InboundTransformer) TransformStream(
 type anthropicInboundStream struct {
 	source                    streams.Stream[*llm.Response]
 	ctx                       context.Context
+	signatureMode             AnthropicSignatureMode
 	hasStarted                bool
 	hasTextContentStarted     bool
 	hasThinkingContentStarted bool
@@ -68,8 +70,6 @@ func generateSignature() string {
 //     signature_delta, then emits content_block_stop.
 //  3. Neither — no-op.
 //
-// If no signature is available when closing a thinking block, a random
-// base64-encoded UUID is generated as a placeholder signature.
 func (s *anthropicInboundStream) closeThinkingBlock() error {
 	if s.pendingSignature != nil && !s.hasThinkingContentStarted {
 		sig := s.pendingSignature
@@ -139,23 +139,24 @@ func (s *anthropicInboundStream) closeThinkingBlock() error {
 	if s.hasThinkingContentStarted {
 		s.hasThinkingContentStarted = false
 
-		// Use pending signature if available, otherwise generate a random one.
 		sig := s.pendingSignature
 		s.pendingSignature = nil
-		if sig == nil {
+		if sig == nil && s.signatureMode != AnthropicSignatureModePassthrough {
 			rs := generateSignature()
 			sig = &rs
 		}
 
-		if err := s.enqueEvent(&StreamEvent{
-			Type:  "content_block_delta",
-			Index: &s.contentIndex,
-			Delta: &StreamDelta{
-				Type:      lo.ToPtr("signature_delta"),
-				Signature: sig,
-			},
-		}); err != nil {
-			return fmt.Errorf("failed to enqueue signature_delta event: %w", err)
+		if sig != nil {
+			if err := s.enqueEvent(&StreamEvent{
+				Type:  "content_block_delta",
+				Index: &s.contentIndex,
+				Delta: &StreamDelta{
+					Type:      lo.ToPtr("signature_delta"),
+					Signature: sig,
+				},
+			}); err != nil {
+				return fmt.Errorf("failed to enqueue signature_delta event: %w", err)
+			}
 		}
 
 		if err := s.enqueEvent(&StreamEvent{

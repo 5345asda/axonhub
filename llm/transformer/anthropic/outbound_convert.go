@@ -1,6 +1,8 @@
 package anthropic
 
 import (
+	"context"
+
 	"github.com/samber/lo"
 
 	"github.com/looplj/axonhub/llm"
@@ -901,6 +903,16 @@ func convertMultiplePartContent(msg llm.Message) (MessageContent, bool) {
 
 // convertToLlmResponse converts Anthropic Message to unified Response format.
 func convertToLlmResponse(anthropicResp *Message, platformType PlatformType, scope shared.TransportScope) *llm.Response {
+	return convertToLlmResponseWithConfig(anthropicResp, platformType, scope, nil, context.Background())
+}
+
+func convertToLlmResponseWithConfig(
+	anthropicResp *Message,
+	platformType PlatformType,
+	scope shared.TransportScope,
+	config *Config,
+	ctx context.Context,
+) *llm.Response {
 	if anthropicResp == nil {
 		return &llm.Response{
 			ID:      "",
@@ -989,12 +1001,17 @@ func convertToLlmResponse(anthropicResp *Message, platformType PlatformType, sco
 		content.MultipleContent = nil
 	}
 
+	reasoningSignature := thinkingSignature
+	if resolveSignatureMode(ctx, config) != AnthropicSignatureModePassthrough {
+		reasoningSignature = shared.EncodeAnthropicSignatureInScope(thinkingSignature, scope)
+	}
+
 	message := &llm.Message{
 		Role:                     anthropicResp.Role,
 		Content:                  content,
 		ToolCalls:                toolCalls,
 		ReasoningContent:         thinkingText,
-		ReasoningSignature:       shared.EncodeAnthropicSignatureInScope(thinkingSignature, scope),
+		ReasoningSignature:       reasoningSignature,
 		RedactedReasoningContent: redactedThinkingData,
 	}
 

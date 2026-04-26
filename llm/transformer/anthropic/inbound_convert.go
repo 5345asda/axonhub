@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 
@@ -426,6 +427,11 @@ func convertAnthropicToolChoiceToLLM(src *ToolChoice) *llm.ToolChoice {
 }
 
 func convertToAnthropicResponse(chatResp *llm.Response) *Message {
+	return convertToAnthropicResponseWithConfig(chatResp, nil, context.Background())
+}
+
+func convertToAnthropicResponseWithConfig(chatResp *llm.Response, config *Config, ctx context.Context) *Message {
+	signatureMode := resolveSignatureMode(ctx, config)
 	resp := &Message{
 		ID:    chatResp.ID,
 		Type:  "message",
@@ -458,9 +464,9 @@ func convertToAnthropicResponse(chatResp *llm.Response) *Message {
 					Type:     "thinking",
 					Thinking: thinkingContent,
 				}
-				if message.ReasoningSignature != nil {
+				if message.ReasoningSignature != nil && *message.ReasoningSignature != "" {
 					thinkingBlock.Signature = message.ReasoningSignature
-				} else {
+				} else if signatureMode != AnthropicSignatureModePassthrough {
 					thinkingBlock.Signature = lo.ToPtr(generateSignature())
 				}
 

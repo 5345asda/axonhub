@@ -363,14 +363,14 @@ func (b MessageContentBlock) MarshalJSON() ([]byte, error) {
 	if b.Type == "thinking" {
 		type thinkingBlock struct {
 			blockAlias
-			Thinking  string `json:"thinking"`
-			Signature string `json:"signature"`
+			Thinking  string  `json:"thinking"`
+			Signature *string `json:"signature,omitempty"`
 		}
 
 		return json.Marshal(thinkingBlock{
 			blockAlias: blockAlias(b),
 			Thinking:   lo.FromPtr(b.Thinking),
-			Signature:  lo.FromPtr(b.Signature),
+			Signature:  b.Signature,
 		})
 	}
 

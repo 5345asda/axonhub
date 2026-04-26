@@ -15,11 +15,18 @@ import (
 )
 
 // InboundTransformer implements transformer.Inbound for Anthropic format.
-type InboundTransformer struct{}
+type InboundTransformer struct {
+	config *Config
+}
 
 // NewInboundTransformer creates a new Anthropic InboundTransformer.
 func NewInboundTransformer() *InboundTransformer {
-	return &InboundTransformer{}
+	return NewInboundTransformerWithConfig(nil)
+}
+
+// NewInboundTransformerWithConfig creates a new Anthropic InboundTransformer with optional config overrides.
+func NewInboundTransformerWithConfig(config *Config) *InboundTransformer {
+	return &InboundTransformer{config: config}
 }
 
 // TransformRequest transforms Anthropic HTTP request to ChatCompletionRequest.
@@ -126,7 +133,7 @@ func (t *InboundTransformer) TransformResponse(ctx context.Context, chatResp *ll
 	}
 
 	// Convert to Anthropic response format
-	anthropicResp := convertToAnthropicResponse(chatResp)
+	anthropicResp := convertToAnthropicResponseWithConfig(chatResp, t.config, ctx)
 
 	body, err := json.Marshal(anthropicResp)
 	if err != nil {
@@ -141,6 +148,10 @@ func (t *InboundTransformer) TransformResponse(ctx context.Context, chatResp *ll
 			"Cache-Control": []string{"no-cache"},
 		},
 	}, nil
+}
+
+func (t *InboundTransformer) signatureMode(ctx context.Context) AnthropicSignatureMode {
+	return resolveSignatureMode(ctx, t.config)
 }
 
 func (t *InboundTransformer) AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {

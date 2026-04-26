@@ -45,6 +45,11 @@ type Config struct {
 	// Platform configuration
 	Type PlatformType `json:"type"`
 
+	// SignatureMode controls whether Anthropic thinking signatures are kept in
+	// AxonHub transport form or passed through unchanged for native-compatible
+	// Anthropic clients.
+	SignatureMode AnthropicSignatureMode `json:"signature_mode,omitempty"`
+
 	Region string `json:"region,omitempty"` // For Vertex
 
 	ProjectID string `json:"project_id,omitempty"` // For Vertex
@@ -320,7 +325,7 @@ func (t *OutboundTransformer) TransformResponse(
 
 	// Convert to ChatCompletionResponse
 	scope, _ := shared.GetTransportScope(ctx)
-	chatResp := convertToLlmResponse(&anthropicResp, t.config.Type, scope)
+	chatResp := convertToLlmResponseWithConfig(&anthropicResp, t.config.Type, scope, t.config, ctx)
 
 	return chatResp, nil
 }
