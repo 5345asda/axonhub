@@ -40,6 +40,9 @@ func main() {
 		case "build-info":
 			showBuildInfo()
 			return
+		case "recover-archived-channels":
+			handleRecoverArchivedChannelsCommand()
+			return
 		}
 	}
 
@@ -286,6 +289,8 @@ func showHelp() {
 	fmt.Println("  axonhub config preview     Preview configuration")
 	fmt.Println("  axonhub config validate    Validate configuration")
 	fmt.Println("  axonhub config get <key>   Get a specific config value")
+	fmt.Println("  axonhub recover-archived-channels [--dry-run] [--model MODEL] [--endpoint URL] [--token TOKEN] [--concurrency N] [--delete-page-errors] [--delete-reason REASON ...]")
+	fmt.Println("                             Test archived channels over admin GraphQL, recover successful ones, and optionally delete matched failures")
 	fmt.Println("  axonhub version            Show version")
 	fmt.Println("  axonhub help               Show this help message")
 	fmt.Println("")
