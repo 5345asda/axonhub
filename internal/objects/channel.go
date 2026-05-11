@@ -10,6 +10,15 @@ import (
 	"github.com/looplj/axonhub/llm/oauth"
 )
 
+// ChannelEndpoint represents an outbound API endpoint configuration within a Channel.
+// Each endpoint specifies the upstream API format and an optional custom path override.
+// Within a single channel, api_format must be unique.
+type ChannelEndpoint struct {
+	APIFormat string `json:"api_format"`
+	Path      string `json:"path,omitempty"`
+	BaseURL   string `json:"base_url,omitempty"`
+}
+
 type (
 	ProxyType   = httpclient.ProxyType
 	ProxyConfig = httpclient.ProxyConfig
@@ -113,6 +122,12 @@ type ChannelSettings struct {
 	// When enabled, only the original model names (from field) will be exposed, not the mapped model names (to field).
 	HideMappedModels bool `json:"hideMappedModels"`
 
+	// LowercaseModelID converts model name matching keys to lowercase.
+	// When enabled, only RequestModel (used for matching) is lowercased; ActualModel
+	// (sent to provider) preserves original casing. This enables cross-channel load
+	// balancing where providers use different casing for the same model.
+	LowercaseModelID bool `json:"lowercaseModelId"`
+
 	// OverrideParameters sets the channel override the request body.
 	// A json string.
 	// e.g. {"max_tokens": 100}, {"temperature": 0.7}
@@ -148,7 +163,9 @@ type ChannelSettings struct {
 	// to the upstream provider and the raw provider response/stream directly to the client
 	// without re-serialization through the transform pipelines.
 	// Only effective when the inbound and outbound API formats are identical.
-	PassThroughBody bool `json:"passThroughBody,omitempty"`
+	// When set to nil, it inherits from the global system setting.
+	// When set to true/false, it overrides the global setting.
+	PassThroughBody *bool `json:"passThroughBody,omitempty"`
 
 	// RateLimit configures the upstream rate limit for the channel.
 	// When configured, the load balancer will skip channels that have exceeded their rate limits.
@@ -159,6 +176,18 @@ type ChannelRateLimit struct {
 	RPM           *int64 `json:"rpm,omitempty"`           // Requests Per Minute, nil = unlimited
 	TPM           *int64 `json:"tpm,omitempty"`           // Tokens Per Minute, nil = unlimited
 	MaxConcurrent *int64 `json:"maxConcurrent,omitempty"` // Maximum concurrent requests, nil = unlimited
+
+	// QueueSize controls the limiter mode when MaxConcurrent is set:
+	//   nil / 0 = soft mode (count only, no blocking, no rejection — preserves PR #1322 scoring behaviour)
+	//   > 0     = hard mode (FIFO wait queue with bounded capacity; excess requests rejected)
+	// Has no effect when MaxConcurrent is unset or <= 0.
+	QueueSize *int64 `json:"queueSize,omitempty"`
+
+	// QueueTimeoutMs is the per-channel queue wait timeout in milliseconds.
+	//   nil / 0 = no per-channel timeout (only the request context bounds the wait)
+	//   > 0     = waiters that exceed this duration receive ErrChannelQueueTimeout
+	// Only meaningful in hard mode (QueueSize > 0).
+	QueueTimeoutMs *int64 `json:"queueTimeoutMs,omitempty"`
 }
 
 // DisabledAPIKey 记录被禁用的 API key 信息（敏感，按 credentials 同级保护）

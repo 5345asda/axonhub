@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
-	"github.com/zhenzou/executors"
 
 	"github.com/looplj/axonhub/internal/authz"
 	"github.com/looplj/axonhub/internal/ent"
@@ -29,7 +28,6 @@ func newTestChannelServiceForChannels(client *ent.Client) *biz.ChannelService {
 	systemService := newTestSystemService(client)
 
 	return biz.NewChannelService(biz.ChannelServiceParams{
-		Executor:      executors.NewPoolScheduleExecutor(),
 		Ent:           client,
 		SystemService: systemService,
 	})
@@ -48,7 +46,6 @@ func newTestLoadBalancedSelector(
 	client *ent.Client,
 	systemService *biz.SystemService,
 	requestService *biz.RequestService,
-	_ *DefaultConnectionTracker,
 ) CandidateSelector {
 	strategies := []LoadBalanceStrategy{
 		NewTraceAwareStrategy(requestService),
@@ -371,7 +368,7 @@ func newTestOrchestrator(
 		UsageLogService:   usageLogService,
 		PipelineFactory:   pipeline.NewFactory(executor),
 		ModelMapper:       NewModelMapper(),
-		connectionTracker: NewDefaultConnectionTracker(1024),
+		channelLimiterManager:      NewChannelLimiterManager(),
 		Middlewares: []pipeline.Middleware{
 			stream.EnsureUsage(),
 		},

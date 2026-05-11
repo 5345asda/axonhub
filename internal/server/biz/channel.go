@@ -8,7 +8,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/zhenzou/executors"
 	"go.uber.org/fx"
 
 	"github.com/looplj/axonhub/internal/ent"
@@ -20,6 +19,7 @@ import (
 	"github.com/looplj/axonhub/internal/pkg/xcache"
 	"github.com/looplj/axonhub/internal/pkg/xcache/live"
 	"github.com/looplj/axonhub/internal/pkg/xerrors"
+	"github.com/looplj/axonhub/internal/server/scheduler"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/transformer"
 )
@@ -39,8 +39,15 @@ type ChannelModelEntry struct {
 type Channel struct {
 	*ent.Channel
 
-	// Outbound is the outbound transformer for the channel.
+	// Outbound is the primary outbound transformer for the channel.
+	// The primary outbound corresponds to the channel's primary default endpoint.
+	// DEPRECATED: Use Outbounds[key] for multi-endpoint channels.
+	// For backward compatibility, this holds the first resolved default endpoint's outbound.
 	Outbound transformer.Outbound
+
+	// Outbounds maps default endpoint API formats to their corresponding outbound transformers.
+	// Populated from the channel's resolved default endpoints. Keyed by api_format string value.
+	Outbounds map[string]transformer.Outbound
 
 	// HTTPClient is the custom HTTP client for this channel with proxy support
 	HTTPClient *httpclient.HttpClient
@@ -73,7 +80,6 @@ type ChannelServiceParams struct {
 	fx.In
 
 	CacheConfig     xcache.Config
-	Executor        executors.ScheduledExecutor
 	Ent             *ent.Client
 	SystemService   *SystemService
 	WebhookNotifier *WebhookNotifier
@@ -85,7 +91,6 @@ func NewChannelService(params ChannelServiceParams) *ChannelService {
 		AbstractService: &AbstractService{
 			db: params.Ent,
 		},
-		Executors:          params.Executor,
 		SystemService:      params.SystemService,
 		WebhookNotifier:    params.WebhookNotifier,
 		httpClient:         params.HttpClient,
@@ -128,9 +133,6 @@ func NewChannelService(params ChannelServiceParams) *ChannelService {
 	})
 	xerrors.NoErr(svc.enabledChannelsCache.Load(context.Background(), true))
 
-	// Schedule model sync every hour
-	xerrors.NoErr2(svc.Executors.ScheduleFuncAtCronRate(svc.runSyncChannelModelsPeriodically, executors.CRONRule{Expr: "11 * * * *"}))
-
 	// Start performance metrics background flush
 	go svc.startPerformanceProcess()
 
@@ -144,7 +146,6 @@ func (svc *ChannelService) Stop() {
 type ChannelService struct {
 	*AbstractService
 
-	Executors       executors.ScheduledExecutor
 	SystemService   *SystemService
 	WebhookNotifier *WebhookNotifier
 
@@ -152,6 +153,11 @@ type ChannelService struct {
 
 	enabledChannelsCache *live.Cache[[]*Channel]
 	channelNotifier      watcher.Notifier[live.CacheEvent[struct{}]]
+
+	// limiterForgetter is invoked after channel mutations so the orchestrator's
+	// ChannelLimiterManager can drop the limiter entry for the affected channel.
+	// Optional: when nil, mutations skip the call (used in tests / before wiring).
+	limiterForgetter ChannelLimiterForgetter
 
 	// perfWindowSeconds is the configurable sliding window size for performance metrics (in seconds)
 	// If not set (0), uses defaultPerformanceWindowSize (600 seconds = 10 minutes)
@@ -184,6 +190,15 @@ type ChannelService struct {
 	perfCh chan *PerformanceRecord
 }
 
+func (svc *ChannelService) RegisterScheduledTasks(ctx context.Context, s *scheduler.Scheduler) error {
+	return s.Register(ctx, scheduler.TaskSpec{
+		Name:        "channel-model-sync",
+		Description: "Sync channel models every hour",
+		CronExpr:    "11 * * * *",
+		Timezone:    "UTC",
+	}, svc.runSyncChannelModelsPeriodically)
+}
+
 func (svc *ChannelService) reloadEnabledChannels(ctx context.Context, current []*Channel, lastUpdate time.Time) ([]*Channel, time.Time, bool, error) {
 	// Query latest updated channel including soft-deleted ones to detect deletions
 	latestUpdatedChannel, err := svc.entFromContext(ctx).Channel.Query().
@@ -213,7 +228,7 @@ func (svc *ChannelService) reloadEnabledChannels(ctx context.Context, current []
 	var channels []*Channel
 
 	for _, c := range entities {
-		channel, err := svc.buildChannelWithTransformer(c)
+		channel, err := svc.buildChannelWithOutbounds(c)
 		if err != nil {
 			log.Warn(ctx, "failed to build channel",
 				log.String("channel", c.Name),
@@ -316,7 +331,7 @@ func (svc *ChannelService) GetChannel(ctx context.Context, channelID int) (*Chan
 		return nil, fmt.Errorf("channel not found: %w", err)
 	}
 
-	return svc.buildChannelWithTransformer(entity)
+	return svc.buildChannelWithOutbounds(entity)
 }
 
 // ListModelsInput represents the input for listing models with filters.
@@ -331,6 +346,14 @@ type ListModelsInput struct {
 type ModelIdentityWithStatus struct {
 	ID     string
 	Status channel.Status
+}
+
+// SaveChannelEndpointsInput represents input for saving channel endpoints.
+type SaveChannelEndpointsInput struct {
+	ChannelID objects.GUID `json:"channelID"`
+	// Endpoints are user-configured endpoint overrides.
+	// Default endpoints are resolved dynamically from the channel type and are read-only.
+	Endpoints []objects.ChannelEndpoint `json:"endpoints"`
 }
 
 var statusPriority = map[channel.Status]int{
@@ -431,6 +454,16 @@ func (svc *ChannelService) createChannel(ctx context.Context, input ent.CreateCh
 				return nil, fmt.Errorf("invalid header override operations: %w", err)
 			}
 		}
+
+		if err := ValidateRateLimit(input.Settings.RateLimit); err != nil {
+			return nil, fmt.Errorf("invalid rate limit: %w", err)
+		}
+	}
+
+	if input.Endpoints != nil {
+		if err := ValidateEndpoints(input.Endpoints); err != nil {
+			return nil, fmt.Errorf("invalid endpoints: %w", err)
+		}
 	}
 
 	createBuilder := svc.entFromContext(ctx).Channel.Create().
@@ -445,6 +478,10 @@ func (svc *ChannelService) createChannel(ctx context.Context, input ent.CreateCh
 		SetNillableAutoSyncSupportedModels(input.AutoSyncSupportedModels).
 		SetNillableAutoSyncModelPattern(input.AutoSyncModelPattern).
 		SetSettings(input.Settings)
+
+	if input.Endpoints != nil {
+		createBuilder.SetEndpoints(input.Endpoints)
+	}
 
 	if input.Tags != nil {
 		createBuilder.SetTags(input.Tags)
@@ -541,6 +578,10 @@ func (svc *ChannelService) UpdateChannel(ctx context.Context, id int, input *ent
 			}
 		}
 
+		if err := ValidateRateLimit(input.Settings.RateLimit); err != nil {
+			return nil, fmt.Errorf("invalid rate limit: %w", err)
+		}
+
 		mut.SetSettings(input.Settings)
 	}
 
@@ -566,6 +607,14 @@ func (svc *ChannelService) UpdateChannel(ctx context.Context, id int, input *ent
 		mut.SetAutoSyncModelPattern(*input.AutoSyncModelPattern)
 	}
 
+	if input.Endpoints != nil {
+		if err := ValidateEndpoints(input.Endpoints); err != nil {
+			return nil, fmt.Errorf("invalid endpoints: %w", err)
+		}
+
+		mut.SetEndpoints(input.Endpoints)
+	}
+
 	if input.ClearErrorMessage {
 		mut.ClearErrorMessage()
 	}
@@ -575,6 +624,11 @@ func (svc *ChannelService) UpdateChannel(ctx context.Context, id int, input *ent
 		return nil, fmt.Errorf("failed to update channel: %w", err)
 	}
 
+	// Intentionally NO forgetLimiter call: ChannelLimiterManager.GetOrCreate
+	// already detects rate-limit changes via cfg equality and rebuilds on the
+	// next request. Calling Forget on every update (including unrelated
+	// settings) would orphan in-flight slots and let the next batch of
+	// requests transiently exceed MaxConcurrent.
 	svc.asyncReloadChannels()
 
 	return channel, nil
@@ -607,12 +661,47 @@ func (svc *ChannelService) asyncReloadChannels() {
 	}
 }
 
+// SaveChannelEndpoints updates the endpoints field for a channel.
+// Validates that api_format values are unique and do not conflict with the
+// channel type's default endpoints.
+func (svc *ChannelService) SaveChannelEndpoints(ctx context.Context, input SaveChannelEndpointsInput) (*ent.Channel, error) {
+	if err := ValidateEndpoints(input.Endpoints); err != nil {
+		return nil, fmt.Errorf("invalid endpoints: %w", err)
+	}
+
+	ch, err := svc.entFromContext(ctx).Channel.Get(ctx, input.ChannelID.ID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get channel: %w", err)
+	}
+
+	defaults := DefaultEndpointsForChannelType(ch.Type)
+	for _, userEP := range input.Endpoints {
+		for _, defaultEP := range defaults {
+			if userEP.APIFormat == defaultEP.APIFormat {
+				return nil, fmt.Errorf("endpoint api_format %q conflicts with default endpoint for channel type %s", userEP.APIFormat, ch.Type)
+			}
+		}
+	}
+
+	ch, err = svc.entFromContext(ctx).Channel.UpdateOne(ch).
+		SetEndpoints(input.Endpoints).
+		Save(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update channel endpoints: %w", err)
+	}
+
+	svc.asyncReloadChannels()
+
+	return ch, nil
+}
+
 // DeleteChannel deletes a channel by ID.
 func (svc *ChannelService) DeleteChannel(ctx context.Context, id int) error {
 	if err := svc.entFromContext(ctx).Channel.DeleteOneID(id).Exec(ctx); err != nil {
 		return fmt.Errorf("failed to delete channel: %w", err)
 	}
 
+	svc.forgetLimiter(id)
 	svc.asyncReloadChannels()
 
 	return nil

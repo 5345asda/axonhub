@@ -17,6 +17,11 @@ import (
 type Config struct {
 	BaseURL        string              `json:"base_url,omitempty"`
 	APIKeyProvider auth.APIKeyProvider `json:"-"`
+
+	// EndpointPath is an optional custom path override for this endpoint.
+	// When set, it replaces the default API path (e.g., "/api/chat").
+	// Must start with "/". Skips default version normalization when set.
+	EndpointPath string `json:"endpoint_path,omitempty"`
 }
 
 type OutboundTransformer struct {
@@ -45,9 +50,10 @@ type ChatRequest struct {
 }
 
 type ChatMessage struct {
-	Role     string `json:"role"`
-	Content  string `json:"content"`
-	Thinking string `json:"thinking,omitempty"`
+	Role     string   `json:"role"`
+	Content  string   `json:"content"`
+	Images   []string `json:"images,omitempty"`
+	Thinking string   `json:"thinking,omitempty"`
 }
 
 type Options struct {
@@ -101,10 +107,10 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 	}
 
 	for _, msg := range llmReq.Messages {
-		content := getContentString(msg.Content)
 		ollamaReq.Messages = append(ollamaReq.Messages, ChatMessage{
 			Role:    msg.Role,
-			Content: content,
+			Content: getContentString(msg.Content),
+			Images:  getImages(msg.Content),
 		})
 	}
 
@@ -120,6 +126,7 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 	headers.Set("Accept", "application/json")
 
 	var authConfig *httpclient.AuthConfig
+
 	if t.config.APIKeyProvider != nil {
 		apiKey := t.config.APIKeyProvider.Get(ctx)
 		if apiKey != "" {
@@ -130,7 +137,15 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 		}
 	}
 
-	url := strings.TrimSuffix(t.config.BaseURL, "/") + "/api/chat"
+	base := strings.TrimSuffix(t.config.BaseURL, "/")
+	defaultPath := "/api/chat"
+
+	path := defaultPath
+	if t.config.EndpointPath != "" {
+		path = t.config.EndpointPath
+	}
+
+	url := base + path
 
 	return &httpclient.Request{
 		Method:    http.MethodPost,
@@ -146,16 +161,49 @@ func getContentString(content llm.MessageContent) string {
 	if content.Content != nil {
 		return *content.Content
 	}
+
 	if len(content.MultipleContent) > 0 {
 		var parts []string
+
 		for _, part := range content.MultipleContent {
 			if part.Type == "text" && part.Text != nil {
 				parts = append(parts, *part.Text)
 			}
 		}
+
 		return strings.Join(parts, "")
 	}
+
 	return ""
+}
+
+func getImages(content llm.MessageContent) []string {
+	if len(content.MultipleContent) == 0 {
+		return nil
+	}
+
+	images := make([]string, 0)
+
+	for _, part := range content.MultipleContent {
+		if part.Type != "image_url" || part.ImageURL == nil {
+			continue
+		}
+
+		image := strings.TrimSpace(part.ImageURL.URL)
+		if image == "" {
+			continue
+		}
+
+		if comma := strings.Index(image, ","); strings.HasPrefix(image, "data:") && comma >= 0 {
+			image = image[comma+1:]
+		}
+
+		if image != "" {
+			images = append(images, image)
+		}
+	}
+
+	return images
 }
 
 func (t *OutboundTransformer) buildOptions(llmReq *llm.Request) *Options {
@@ -165,6 +213,7 @@ func (t *OutboundTransformer) buildOptions(llmReq *llm.Request) *Options {
 		if opts == nil {
 			opts = &Options{}
 		}
+
 		opts.Temperature = llmReq.Temperature
 	}
 
@@ -172,6 +221,7 @@ func (t *OutboundTransformer) buildOptions(llmReq *llm.Request) *Options {
 		if opts == nil {
 			opts = &Options{}
 		}
+
 		opts.TopP = llmReq.TopP
 	}
 
@@ -179,6 +229,7 @@ func (t *OutboundTransformer) buildOptions(llmReq *llm.Request) *Options {
 		if opts == nil {
 			opts = &Options{}
 		}
+
 		numPredict := int(*llmReq.MaxTokens)
 		opts.NumPredict = &numPredict
 	}
@@ -190,10 +241,12 @@ func (t *OutboundTransformer) buildOptions(llmReq *llm.Request) *Options {
 		} else if len(llmReq.Stop.MultipleStop) > 0 {
 			stops = llmReq.Stop.MultipleStop
 		}
+
 		if len(stops) > 0 {
 			if opts == nil {
 				opts = &Options{}
 			}
+
 			opts.Stop = stops
 		}
 	}
@@ -212,7 +265,9 @@ func (t *OutboundTransformer) TransformResponse(ctx context.Context, httpResp *h
 	}
 
 	content := ""
+
 	var reasoningContent *string
+
 	if ollamaResp.Message != nil {
 		content = ollamaResp.Message.Content
 		if ollamaResp.Message.Thinking != "" {
@@ -251,7 +306,7 @@ func (t *OutboundTransformer) TransformResponse(ctx context.Context, httpResp *h
 	}, nil
 }
 
-func (t *OutboundTransformer) TransformStream(ctx context.Context, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
+func (t *OutboundTransformer) TransformStream(ctx context.Context, req *httpclient.Request, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
 	return streams.MapErr(stream, func(event *httpclient.StreamEvent) (*llm.Response, error) {
 		return t.TransformStreamChunk(ctx, event)
 	}), nil
@@ -269,7 +324,9 @@ func (t *OutboundTransformer) TransformStreamChunk(ctx context.Context, event *h
 
 	// Extract content and thinking from the message
 	content := ""
+
 	var reasoningContent *string
+
 	if ollamaResp.Message != nil {
 		content = ollamaResp.Message.Content
 		if ollamaResp.Message.Thinking != "" {
@@ -296,10 +353,12 @@ func (t *OutboundTransformer) TransformStreamChunk(ctx context.Context, event *h
 					if ollamaResp.Done && ollamaResp.DoneReason != "" {
 						return &ollamaResp.DoneReason
 					}
+
 					if ollamaResp.Done {
 						reason := "stop"
 						return &reason
 					}
+
 					return nil
 				}(),
 			},
@@ -321,16 +380,18 @@ func (t *OutboundTransformer) TransformError(ctx context.Context, err *httpclien
 	}
 }
 
-func (t *OutboundTransformer) AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {
+func (t *OutboundTransformer) AggregateStreamChunks(ctx context.Context, _ *httpclient.Request, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {
 	if len(chunks) == 0 {
 		return nil, llm.ResponseMeta{}, fmt.Errorf("no chunks to aggregate")
 	}
 
-	var fullContent strings.Builder
-	var fullThinking strings.Builder
-	var model string
-	var promptEvalCount, evalCount int
-	var finishReason string
+	var (
+		fullContent                strings.Builder
+		fullThinking               strings.Builder
+		model                      string
+		promptEvalCount, evalCount int
+		finishReason               string
+	)
 
 	for _, chunk := range chunks {
 		var ollamaResp ChatResponse
@@ -341,16 +402,20 @@ func (t *OutboundTransformer) AggregateStreamChunks(ctx context.Context, chunks 
 		if ollamaResp.Model != "" {
 			model = ollamaResp.Model
 		}
+
 		if ollamaResp.Message != nil {
 			fullContent.WriteString(ollamaResp.Message.Content)
 			fullThinking.WriteString(ollamaResp.Message.Thinking)
 		}
+
 		if ollamaResp.PromptEvalCount > 0 {
 			promptEvalCount = ollamaResp.PromptEvalCount
 		}
+
 		if ollamaResp.EvalCount > 0 {
 			evalCount = ollamaResp.EvalCount
 		}
+
 		if ollamaResp.Done && ollamaResp.DoneReason != "" {
 			finishReason = ollamaResp.DoneReason
 		}
@@ -361,6 +426,7 @@ func (t *OutboundTransformer) AggregateStreamChunks(ctx context.Context, chunks 
 	}
 
 	contentStr := fullContent.String()
+
 	var reasoningContent *string
 	if thinkingStr := fullThinking.String(); thinkingStr != "" {
 		reasoningContent = &thinkingStr

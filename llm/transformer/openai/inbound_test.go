@@ -477,7 +477,7 @@ func TestInboundTransformer_TransformStreamChunk(t *testing.T) {
 
 func TestInboundTransformer_TransformStream_SkipsPureReasoningSignatureChunk(t *testing.T) {
 	transformer := NewInboundTransformer()
-	signature := shared.GeminiThoughtSignaturePrefix + "stream_signature"
+	signature := "stream_signature"
 
 	stream, err := transformer.TransformStream(t.Context(), streams.SliceStream([]*llm.Response{
 		{
@@ -530,6 +530,7 @@ func TestInboundTransformer_TransformStream_SkipsPureReasoningSignatureChunk(t *
 	for stream.Next() {
 		events = append(events, stream.Current())
 	}
+
 	require.NoError(t, stream.Err())
 	require.Len(t, events, 2)
 
@@ -797,6 +798,7 @@ func TestInboundTransformer_TransformResponse_WithCitations(t *testing.T) {
 
 				// Parse the response body
 				var chatResp Response
+
 				err := json.Unmarshal(resp.Body, &chatResp)
 				if err != nil {
 					return false
@@ -838,6 +840,7 @@ func TestInboundTransformer_TransformResponse_WithCitations(t *testing.T) {
 
 				// Parse the response body
 				var chatResp Response
+
 				err := json.Unmarshal(resp.Body, &chatResp)
 				if err != nil {
 					return false
@@ -904,7 +907,7 @@ func TestMessage_ToLLMMessage_WithAlreadyPrefixedGeminiThoughtSignature(t *testi
 				Index: 0,
 				ExtraContent: &ToolCallExtraContent{
 					Google: &ToolCallGoogleExtraContent{
-						ThoughtSignature: shared.GeminiThoughtSignaturePrefix + "base64_signature",
+						ThoughtSignature: "base64_signature",
 					},
 				},
 			},
@@ -914,7 +917,7 @@ func TestMessage_ToLLMMessage_WithAlreadyPrefixedGeminiThoughtSignature(t *testi
 	got := msg.ToLLMMessage()
 
 	require.NotNil(t, got.ReasoningSignature)
-	require.Equal(t, shared.GeminiThoughtSignaturePrefix+"base64_signature", *got.ReasoningSignature)
+	require.Equal(t, "base64_signature", *got.ReasoningSignature)
 }
 
 func TestToolCall_ToLLMToolCall_NormalizesGeminiThoughtSignature(t *testing.T) {
@@ -1027,7 +1030,7 @@ func TestInboundTransformer_TransformRequest_WithToolCallExtraFieldsThoughtSigna
 func TestMessageFromLLM_WithGeminiThoughtSignatureDoesNotInjectToolCallExtraContent(t *testing.T) {
 	msg := llm.Message{
 		Role:               "assistant",
-		ReasoningSignature: shared.EncodeGeminiThoughtSignature(lo.ToPtr("base64_signature"), ""),
+		ReasoningSignature: shared.EncodeGeminiThoughtSignature(lo.ToPtr("base64_signature")),
 		ToolCalls: []llm.ToolCall{
 			{
 				ID:   "call_1",
@@ -1060,7 +1063,7 @@ func TestInboundTransformer_TransformResponse_WithGeminiToolCallThoughtSignature
 				Index: 0,
 				Message: &llm.Message{
 					Role:               "assistant",
-					ReasoningSignature: shared.EncodeGeminiThoughtSignature(lo.ToPtr("base64_signature"), ""),
+					ReasoningSignature: shared.EncodeGeminiThoughtSignature(lo.ToPtr("base64_signature")),
 					ToolCalls: []llm.ToolCall{
 						{
 							ID:   "call_1",
@@ -1110,7 +1113,7 @@ func TestInboundTransformer_TransformResponse_WithGeminiPrefixedToolCallMetadata
 							},
 							Index: 0,
 							TransformerMetadata: map[string]any{
-								TransformerMetadataKeyGoogleThoughtSignature: shared.GeminiThoughtSignaturePrefix + "base64_signature",
+								TransformerMetadataKeyGoogleThoughtSignature: "base64_signature",
 							},
 						},
 					},
@@ -1130,7 +1133,7 @@ func TestInboundTransformer_TransformResponse_WithGeminiPrefixedToolCallMetadata
 	require.NotNil(t, oaiResp.Choices[0].Message.ToolCalls[0].ExtraContent.Google)
 	require.Equal(
 		t,
-		shared.GeminiThoughtSignaturePrefix+"base64_signature",
+		"base64_signature",
 		oaiResp.Choices[0].Message.ToolCalls[0].ExtraContent.Google.ThoughtSignature,
 	)
 }

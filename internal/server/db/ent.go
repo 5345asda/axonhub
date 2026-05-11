@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
+	"time"
 
 	"entgo.io/ent/dialect"
 	"entgo.io/ent/dialect/sql/schema"
@@ -21,61 +23,41 @@ import (
 	_ "github.com/looplj/axonhub/internal/pkg/sqlite"
 )
 
+// NewEntClient creates an Ent client. When read_replica.read_dsn is configured,
+// SELECT/WITH queries are automatically routed to the replica; all writes go to master.
+// Transactions always run on master. If read_dsn is empty, all queries go to master.
 func NewEntClient(cfg Config) *ent.Client {
 	var opts []ent.Option
 	if cfg.Debug {
 		opts = append(opts, ent.Debug())
 	}
 
-	var (
-		sqlDB     *sql.DB
-		dbDialect string
-		err       error
-	)
+	masterDSN := ensureSQLiteWAL(cfg.Dialect, cfg.DSN, cfg.DisableSQLiteAutoWAL)
+	dbDialect, masterDB, err := openDB(cfg.Dialect, masterDSN,
+		cfg.MaxOpenConns, cfg.MaxIdleConns, cfg.ConnMaxLifetime, cfg.ConnMaxIdleTime)
+	if err != nil {
+		panic(err)
+	}
 
-	switch cfg.Dialect {
-	case "postgres", "pgx", "postgresdb", "pg", "postgresql":
-		sqlDB, err = sql.Open("pgx", cfg.DSN)
+	var drv dialect.Driver
+	if cfg.ReadReplica.DSN != "" {
+		replicaDSN := ensureSQLiteWAL(cfg.Dialect, cfg.ReadReplica.DSN, cfg.DisableSQLiteAutoWAL)
+		readDialect, replicaDB, err := openDB(cfg.Dialect, replicaDSN,
+			cfg.ReadReplica.MaxOpenConns, cfg.ReadReplica.MaxIdleConns,
+			cfg.ConnMaxLifetime, cfg.ConnMaxIdleTime)
 		if err != nil {
 			panic(err)
 		}
-
-		dbDialect = dialect.Postgres
-	case "sqlite3", "sqlite":
-		sqlDB, err = sql.Open("sqlite3", cfg.DSN)
-		if err != nil {
-			panic(err)
+		if readDialect != dbDialect {
+			panic(fmt.Errorf("read replica dialect mismatch: got %s, want %s", readDialect, dbDialect))
 		}
-
-		dbDialect = dialect.SQLite
-	case "mysql", "tidb":
-		sqlDB, err = sql.Open("mysql", cfg.DSN)
-		if err != nil {
-			panic(err)
-		}
-
-		dbDialect = dialect.MySQL
-	default:
-		panic(fmt.Errorf("invalid dialect: %s", cfg.Dialect))
+		masterDriver := entsql.OpenDB(dbDialect, masterDB)
+		replicaDriver := entsql.OpenDB(dbDialect, replicaDB)
+		drv = newRouterDriver(masterDriver, replicaDriver)
+	} else {
+		drv = entsql.OpenDB(dbDialect, masterDB)
 	}
 
-	if cfg.MaxOpenConns > 0 {
-		sqlDB.SetMaxOpenConns(cfg.MaxOpenConns)
-	}
-
-	if cfg.MaxIdleConns > 0 {
-		sqlDB.SetMaxIdleConns(cfg.MaxIdleConns)
-	}
-
-	if cfg.ConnMaxLifetime > 0 {
-		sqlDB.SetConnMaxLifetime(cfg.ConnMaxLifetime)
-	}
-
-	if cfg.ConnMaxIdleTime > 0 {
-		sqlDB.SetConnMaxIdleTime(cfg.ConnMaxIdleTime)
-	}
-
-	drv := entsql.OpenDB(dbDialect, sqlDB)
 	opts = append(opts, ent.Driver(drv))
 	client := ent.NewClient(opts...)
 
@@ -91,13 +73,89 @@ func NewEntClient(cfg Config) *ent.Client {
 		panic(err)
 	}
 
-	// Run data migrations using the Migrator framework
-	ctx := context.Background()
-
 	migrator := datamigrate.NewMigrator(client)
-	if err := migrator.Run(ctx); err != nil {
+	if err := migrator.Run(context.Background()); err != nil {
 		panic(err)
 	}
 
 	return client
+}
+
+// ensureSQLiteWAL appends _pragma=journal_mode(WAL) to the DSN for SQLite dialects
+// unless WAL is explicitly disabled or the DSN already specifies a journal_mode pragma.
+func ensureSQLiteWAL(dialectName, dsn string, disable bool) string {
+	if disable {
+		return dsn
+	}
+	switch dialectName {
+	case "sqlite3", "sqlite":
+		if !strings.Contains(dsn, "journal_mode") {
+			if strings.Contains(dsn, "?") {
+				dsn += "&_pragma=journal_mode(WAL)"
+			} else {
+				dsn += "?_pragma=journal_mode(WAL)"
+			}
+		}
+	}
+	return dsn
+}
+
+// openDB opens a sql.DB for the given dialect and DSN, applies pool settings,
+// and returns the ent dialect string along with the DB handle.
+func openDB(dialectName, dsn string, maxOpen, maxIdle int, maxLifetime, maxIdleTime time.Duration) (string, *sql.DB, error) {
+	ed, err := entDialect(dialectName)
+	if err != nil {
+		return "", nil, err
+	}
+
+	drvName, err := driverName(dialectName)
+	if err != nil {
+		return "", nil, err
+	}
+
+	sqlDB, err := sql.Open(drvName, dsn)
+	if err != nil {
+		return "", nil, err
+	}
+
+	if maxOpen > 0 {
+		sqlDB.SetMaxOpenConns(maxOpen)
+	}
+	if maxIdle > 0 {
+		sqlDB.SetMaxIdleConns(maxIdle)
+	}
+	if maxLifetime > 0 {
+		sqlDB.SetConnMaxLifetime(maxLifetime)
+	}
+	if maxIdleTime > 0 {
+		sqlDB.SetConnMaxIdleTime(maxIdleTime)
+	}
+
+	return ed, sqlDB, nil
+}
+
+func driverName(dialectName string) (string, error) {
+	switch dialectName {
+	case "postgres", "pgx", "postgresdb", "pg", "postgresql":
+		return "pgx", nil
+	case "sqlite3", "sqlite":
+		return "sqlite3", nil
+	case "mysql", "tidb":
+		return "mysql", nil
+	default:
+		return "", fmt.Errorf("invalid dialect: %s", dialectName)
+	}
+}
+
+func entDialect(dialectName string) (string, error) {
+	switch dialectName {
+	case "postgres", "pgx", "postgresdb", "pg", "postgresql":
+		return dialect.Postgres, nil
+	case "sqlite3", "sqlite":
+		return dialect.SQLite, nil
+	case "mysql", "tidb":
+		return dialect.MySQL, nil
+	default:
+		return "", fmt.Errorf("invalid dialect: %s", dialectName)
+	}
 }

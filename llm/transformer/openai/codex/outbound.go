@@ -41,9 +41,8 @@ var (
 )
 
 type Params struct {
-	TokenProvider   oauth.TokenGetter
-	BaseURL         string
-	AccountIdentity string
+	TokenProvider oauth.TokenGetter
+	BaseURL       string
 }
 
 func NewOutboundTransformer(params Params) (*OutboundTransformer, error) {
@@ -60,9 +59,8 @@ func NewOutboundTransformer(params Params) (*OutboundTransformer, error) {
 	// The underlying responses outbound requires baseURL/apiKey. We only need its request body logic.
 	// Use a dummy config and then override URL/auth.
 	ro, err := responses.NewOutboundTransformerWithConfig(&responses.Config{
-		BaseURL:         baseURL,
-		APIKeyProvider:  auth.NewStaticKeyProvider("dummy"),
-		AccountIdentity: params.AccountIdentity,
+		BaseURL:        baseURL,
+		APIKeyProvider: auth.NewStaticKeyProvider("dummy"),
 	})
 	if err != nil {
 		return nil, err
@@ -91,6 +89,7 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 	rawOriginator := ""
 	rawUserAgent := ""
 	rawTurnMetadata := ""
+
 	var rawHeaders http.Header
 
 	if llmReq.RawRequest != nil && llmReq.RawRequest.Headers != nil {
@@ -121,6 +120,7 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 	default:
 		reqCopy.Stream = lo.ToPtr(true)
 	}
+
 	reqCopy.Store = lo.ToPtr(false)
 
 	// Codex recommends parallel tool calls.
@@ -130,9 +130,11 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 	if reqCopy.TransformerMetadata == nil {
 		reqCopy.TransformerMetadata = map[string]any{}
 	}
+
 	if _, ok := reqCopy.TransformerMetadata["include"]; !ok {
 		reqCopy.TransformerMetadata["include"] = []string{"reasoning.encrypted_content"}
 	}
+
 	if reqCopy.ReasoningSummary == nil || *reqCopy.ReasoningSummary == "" {
 		// Enable reasoning summary for Codex CLI requests.
 		reqCopy.ReasoningSummary = lo.ToPtr("auto")
@@ -145,6 +147,7 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 	reqCopy.Metadata = nil
 
 	reqCopy.TransformOptions.ArrayInputs = lo.ToPtr(true)
+
 	hreq, err := t.responsesOutbound.TransformRequest(ctx, &reqCopy)
 	if err != nil {
 		return nil, err
@@ -158,12 +161,15 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 	} else {
 		hreq.Headers.Set("Accept", "text/event-stream")
 	}
+
 	hreq.Headers.Del("User-Agent")
+
 	if rawOriginator != "" {
 		hreq.Headers.Set("Originator", rawOriginator)
 	} else {
 		hreq.Headers.Set("Originator", AxonHubOriginator)
 	}
+
 	if rawUserAgent != "" {
 		hreq.Headers.Set("User-Agent", rawUserAgent)
 	}
@@ -192,17 +198,18 @@ func (t *OutboundTransformer) TransformRequest(ctx context.Context, llmReq *llm.
 
 	return hreq, nil
 }
+
 func (t *OutboundTransformer) TransformResponse(ctx context.Context, httpResp *httpclient.Response) (*llm.Response, error) {
 	// Codex upstream returns Responses API response.
 	return t.responsesOutbound.TransformResponse(ctx, httpResp)
 }
 
-func (t *OutboundTransformer) TransformStream(ctx context.Context, streamIn streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
-	return t.responsesOutbound.TransformStream(ctx, streamIn)
+func (t *OutboundTransformer) TransformStream(ctx context.Context, req *httpclient.Request, streamIn streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
+	return t.responsesOutbound.TransformStream(ctx, req, streamIn)
 }
 
-func (t *OutboundTransformer) AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {
-	return t.responsesOutbound.AggregateStreamChunks(ctx, chunks)
+func (t *OutboundTransformer) AggregateStreamChunks(ctx context.Context, req *httpclient.Request, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {
+	return t.responsesOutbound.AggregateStreamChunks(ctx, req, chunks)
 }
 
 func (t *OutboundTransformer) CustomizeExecutor(executor pipeline.Executor) pipeline.Executor {
@@ -221,6 +228,7 @@ func (e *codexExecutor) Do(ctx context.Context, request *httpclient.Request) (*h
 	if request.RequestType == string(llm.RequestTypeCompact) {
 		return e.inner.Do(ctx, request)
 	}
+
 	stream, err := e.inner.DoStream(ctx, request)
 	if err != nil {
 		return nil, err
@@ -231,6 +239,7 @@ func (e *codexExecutor) Do(ctx context.Context, request *httpclient.Request) (*h
 	}()
 
 	var chunks []*httpclient.StreamEvent
+
 	for stream.Next() {
 		ev := stream.Current()
 		if ev == nil {
@@ -248,7 +257,7 @@ func (e *codexExecutor) Do(ctx context.Context, request *httpclient.Request) (*h
 		return nil, err
 	}
 
-	body, _, err := e.transformer.AggregateStreamChunks(ctx, chunks)
+	body, _, err := e.transformer.AggregateStreamChunks(ctx, request, chunks)
 	if err != nil {
 		return nil, err
 	}

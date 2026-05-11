@@ -15,15 +15,13 @@ import (
 	"github.com/looplj/axonhub/llm/internal/pkg/xjson"
 	"github.com/looplj/axonhub/llm/transformer"
 	"github.com/looplj/axonhub/llm/transformer/openai"
-	"github.com/looplj/axonhub/llm/transformer/shared"
 )
 
 // Config holds all configuration for the Gemini OpenAI outbound transformer.
 type Config struct {
 	// API configuration
-	BaseURL         string              `json:"base_url,omitempty"` // Custom base URL (optional)
-	APIKeyProvider  auth.APIKeyProvider `json:"-"`                  // API key provider
-	AccountIdentity string              `json:"account_identity,omitempty"`
+	BaseURL        string              `json:"base_url,omitempty"` // Custom base URL (optional)
+	APIKeyProvider auth.APIKeyProvider `json:"-"`                  // API key provider
 }
 
 // OutboundTransformer implements transformer.Outbound for Gemini OpenAI format.
@@ -32,9 +30,8 @@ type Config struct {
 type OutboundTransformer struct {
 	transformer.Outbound
 
-	BaseURL         string
-	APIKeyProvider  auth.APIKeyProvider
-	AccountIdentity string
+	BaseURL        string
+	APIKeyProvider auth.APIKeyProvider
 }
 
 // ThinkingBudget represents a thinking budget that can be either an int or a string.
@@ -143,6 +140,7 @@ func NewOutboundTransformerWithConfig(config *Config) (transformer.Outbound, err
 		PlatformType:   openai.PlatformGoogle,
 		BaseURL:        baseURL,
 		APIKeyProvider: config.APIKeyProvider,
+		ReasoningField: openai.ReasoningFieldContent,
 	}
 
 	outbound, err := openai.NewOutboundTransformerWithConfig(oaiConfig)
@@ -151,10 +149,9 @@ func NewOutboundTransformerWithConfig(config *Config) (transformer.Outbound, err
 	}
 
 	return &OutboundTransformer{
-		Outbound:        outbound,
-		BaseURL:         baseURL,
-		APIKeyProvider:  config.APIKeyProvider,
-		AccountIdentity: config.AccountIdentity,
+		Outbound:       outbound,
+		BaseURL:        baseURL,
+		APIKeyProvider: config.APIKeyProvider,
 	}, nil
 }
 
@@ -306,10 +303,6 @@ func (t *OutboundTransformer) TransformRequest(
 	req := *llmReq
 	// Gemini OpenAI endpoint does not accept metadata.
 	req.Metadata = nil
-	scope := shared.TransportScope{
-		BaseURL:         t.BaseURL,
-		AccountIdentity: t.AccountIdentity,
-	}
 
 	// Fallback: Filter out Google native tools (not supported by OpenAI-compatible endpoint)
 	// This is a graceful degradation when no native Gemini channels are available.
@@ -340,7 +333,7 @@ func (t *OutboundTransformer) TransformRequest(
 	}
 
 	// Convert llm.Request to openai.Request
-	oaiReq := openai.RequestFromLLM(&req)
+	oaiReq := openai.RequestFromLLM(&req, openai.ReasoningFieldContent)
 	fillGeminiThoughtSignatureForGeminiOpenAIRequest(&req, oaiReq)
 
 	geminiReq := Request{Request: *oaiReq}
@@ -375,7 +368,7 @@ func (t *OutboundTransformer) TransformRequest(
 		Body:                  body,
 		Auth:                  auth,
 		SkipInboundQueryMerge: true,
-		Metadata:              scope.Metadata(),
+		Metadata:              nil,
 		APIFormat:             string(llm.APIFormatOpenAIChatCompletion),
 	}, nil
 }
@@ -403,6 +396,7 @@ func fillGeminiThoughtSignatureForGeminiOpenAIRequest(src *llm.Request, dst *ope
 		}
 
 		hasToolCallThoughtSignature := false
+
 		for j := range srcMsg.ToolCalls {
 			raw, ok := srcMsg.ToolCalls[j].TransformerMetadata[openai.TransformerMetadataKeyGoogleThoughtSignature].(string)
 			if !ok || raw == "" {
@@ -410,6 +404,7 @@ func fillGeminiThoughtSignatureForGeminiOpenAIRequest(src *llm.Request, dst *ope
 			}
 
 			dstToolCallIndex := -1
+
 			if srcMsg.ToolCalls[j].ID != "" {
 				if idx, exists := dstToolCallIndexByID[srcMsg.ToolCalls[j].ID]; exists {
 					dstToolCallIndex = idx
@@ -424,7 +419,7 @@ func fillGeminiThoughtSignatureForGeminiOpenAIRequest(src *llm.Request, dst *ope
 				continue
 			}
 
-			// Gemini OpenAI response direction does not encode footprint (it reuses
+			// Gemini OpenAI response direction does not encode prefix (it reuses
 			// openai.OutboundTransformer.TransformResponse which stores raw values),
 			// so we passthrough the raw value here without attempting to decode.
 			ensureGoogleThoughtSignatureExtraContent(&dst.Messages[i].ToolCalls[dstToolCallIndex]).ThoughtSignature = raw

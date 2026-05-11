@@ -79,7 +79,7 @@ func TestPipeline_Process_StreamEmptyResponseDetection(t *testing.T) {
 
 		prepareCalls := 0
 		outbound := &mockOutbound{
-			transformStream: func(ctx context.Context, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
+			transformStream: func(ctx context.Context, req *httpclient.Request, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
 				if streamCalls == 1 {
 					// First call: empty response (finish reason, no content)
 					return streams.SliceStream([]*llm.Response{
@@ -136,7 +136,7 @@ func TestPipeline_Process_StreamEmptyResponseDetection(t *testing.T) {
 		}
 
 		outbound := &mockOutbound{
-			transformStream: func(ctx context.Context, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
+			transformStream: func(ctx context.Context, req *httpclient.Request, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
 				return streams.SliceStream([]*llm.Response{
 					{Choices: []llm.Choice{{
 						Delta: &llm.Message{
@@ -207,10 +207,10 @@ func TestPipeline_Process_NonStreamEmptyResponseDetection(t *testing.T) {
 		}
 
 		p := &pipeline{
-			Executor:              executor,
-			Inbound:               &mockInbound{},
-			Outbound:              outbound,
-			maxSameChannelRetries: 1,
+			Executor:               executor,
+			Inbound:                &mockInbound{},
+			Outbound:               outbound,
+			maxSameChannelRetries:  1,
 			emptyResponseDetection: true,
 		}
 
@@ -241,9 +241,9 @@ func TestPipeline_Process_NonStreamEmptyResponseDetection(t *testing.T) {
 		}
 
 		p := &pipeline{
-			Executor:              executor,
-			Inbound:               &mockInbound{},
-			Outbound:              outbound,
+			Executor:               executor,
+			Inbound:                &mockInbound{},
+			Outbound:               outbound,
 			emptyResponseDetection: true,
 		}
 

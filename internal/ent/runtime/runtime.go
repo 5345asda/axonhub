@@ -7,12 +7,14 @@ import (
 	"time"
 
 	"github.com/looplj/axonhub/internal/ent/apikey"
+	"github.com/looplj/axonhub/internal/ent/apikeyprofiletemplate"
 	"github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/ent/channelmodelprice"
 	"github.com/looplj/axonhub/internal/ent/channelmodelpriceversion"
 	"github.com/looplj/axonhub/internal/ent/channeloverridetemplate"
 	"github.com/looplj/axonhub/internal/ent/datastorage"
 	"github.com/looplj/axonhub/internal/ent/model"
+	"github.com/looplj/axonhub/internal/ent/oidcidentity"
 	"github.com/looplj/axonhub/internal/ent/project"
 	"github.com/looplj/axonhub/internal/ent/prompt"
 	"github.com/looplj/axonhub/internal/ent/promptprotectionrule"
@@ -85,6 +87,49 @@ func init() {
 	apikeyDescProfiles := apikeyFields[7].Descriptor()
 	// apikey.DefaultProfiles holds the default value on creation for the profiles field.
 	apikey.DefaultProfiles = apikeyDescProfiles.Default.(*objects.APIKeyProfiles)
+	apikeyprofiletemplateMixin := schema.APIKeyProfileTemplate{}.Mixin()
+	apikeyprofiletemplate.Policy = privacy.NewPolicies(schema.APIKeyProfileTemplate{})
+	apikeyprofiletemplate.Hooks[0] = func(next ent.Mutator) ent.Mutator {
+		return ent.MutateFunc(func(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+			if err := apikeyprofiletemplate.Policy.EvalMutation(ctx, m); err != nil {
+				return nil, err
+			}
+			return next.Mutate(ctx, m)
+		})
+	}
+	apikeyprofiletemplateMixinHooks1 := apikeyprofiletemplateMixin[1].Hooks()
+
+	apikeyprofiletemplate.Hooks[1] = apikeyprofiletemplateMixinHooks1[0]
+	apikeyprofiletemplateMixinInters1 := apikeyprofiletemplateMixin[1].Interceptors()
+	apikeyprofiletemplate.Interceptors[0] = apikeyprofiletemplateMixinInters1[0]
+	apikeyprofiletemplateMixinFields0 := apikeyprofiletemplateMixin[0].Fields()
+	_ = apikeyprofiletemplateMixinFields0
+	apikeyprofiletemplateMixinFields1 := apikeyprofiletemplateMixin[1].Fields()
+	_ = apikeyprofiletemplateMixinFields1
+	apikeyprofiletemplateFields := schema.APIKeyProfileTemplate{}.Fields()
+	_ = apikeyprofiletemplateFields
+	// apikeyprofiletemplateDescCreatedAt is the schema descriptor for created_at field.
+	apikeyprofiletemplateDescCreatedAt := apikeyprofiletemplateMixinFields0[0].Descriptor()
+	// apikeyprofiletemplate.DefaultCreatedAt holds the default value on creation for the created_at field.
+	apikeyprofiletemplate.DefaultCreatedAt = apikeyprofiletemplateDescCreatedAt.Default.(func() time.Time)
+	// apikeyprofiletemplateDescUpdatedAt is the schema descriptor for updated_at field.
+	apikeyprofiletemplateDescUpdatedAt := apikeyprofiletemplateMixinFields0[1].Descriptor()
+	// apikeyprofiletemplate.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	apikeyprofiletemplate.DefaultUpdatedAt = apikeyprofiletemplateDescUpdatedAt.Default.(func() time.Time)
+	// apikeyprofiletemplate.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	apikeyprofiletemplate.UpdateDefaultUpdatedAt = apikeyprofiletemplateDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// apikeyprofiletemplateDescDeletedAt is the schema descriptor for deleted_at field.
+	apikeyprofiletemplateDescDeletedAt := apikeyprofiletemplateMixinFields1[0].Descriptor()
+	// apikeyprofiletemplate.DefaultDeletedAt holds the default value on creation for the deleted_at field.
+	apikeyprofiletemplate.DefaultDeletedAt = apikeyprofiletemplateDescDeletedAt.Default.(int)
+	// apikeyprofiletemplateDescDescription is the schema descriptor for description field.
+	apikeyprofiletemplateDescDescription := apikeyprofiletemplateFields[1].Descriptor()
+	// apikeyprofiletemplate.DefaultDescription holds the default value on creation for the description field.
+	apikeyprofiletemplate.DefaultDescription = apikeyprofiletemplateDescDescription.Default.(string)
+	// apikeyprofiletemplateDescProfile is the schema descriptor for profile field.
+	apikeyprofiletemplateDescProfile := apikeyprofiletemplateFields[3].Descriptor()
+	// apikeyprofiletemplate.DefaultProfile holds the default value on creation for the profile field.
+	apikeyprofiletemplate.DefaultProfile = apikeyprofiletemplateDescProfile.Default.(*objects.APIKeyProfile)
 	channelMixin := schema.Channel{}.Mixin()
 	channel.Policy = privacy.NewPolicies(schema.Channel{})
 	channel.Hooks[0] = func(next ent.Mutator) ent.Mutator {
@@ -152,6 +197,10 @@ func init() {
 	channelDescOrderingWeight := channelFields[14].Descriptor()
 	// channel.DefaultOrderingWeight holds the default value on creation for the ordering_weight field.
 	channel.DefaultOrderingWeight = channelDescOrderingWeight.Default.(int)
+	// channelDescEndpoints is the schema descriptor for endpoints field.
+	channelDescEndpoints := channelFields[17].Descriptor()
+	// channel.DefaultEndpoints holds the default value on creation for the endpoints field.
+	channel.DefaultEndpoints = channelDescEndpoints.Default.([]objects.ChannelEndpoint)
 	channelmodelpriceMixin := schema.ChannelModelPrice{}.Mixin()
 	channelmodelprice.Policy = privacy.NewPolicies(schema.ChannelModelPrice{})
 	channelmodelprice.Hooks[0] = func(next ent.Mutator) ent.Mutator {
@@ -340,6 +389,41 @@ func init() {
 	modelDescDeletedAt := modelMixinFields1[0].Descriptor()
 	// model.DefaultDeletedAt holds the default value on creation for the deleted_at field.
 	model.DefaultDeletedAt = modelDescDeletedAt.Default.(int)
+	oidcidentityMixin := schema.OIDCIdentity{}.Mixin()
+	oidcidentity.Policy = privacy.NewPolicies(schema.OIDCIdentity{})
+	oidcidentity.Hooks[0] = func(next ent.Mutator) ent.Mutator {
+		return ent.MutateFunc(func(ctx context.Context, m ent.Mutation) (ent.Value, error) {
+			if err := oidcidentity.Policy.EvalMutation(ctx, m); err != nil {
+				return nil, err
+			}
+			return next.Mutate(ctx, m)
+		})
+	}
+	oidcidentityMixinHooks1 := oidcidentityMixin[1].Hooks()
+
+	oidcidentity.Hooks[1] = oidcidentityMixinHooks1[0]
+	oidcidentityMixinInters1 := oidcidentityMixin[1].Interceptors()
+	oidcidentity.Interceptors[0] = oidcidentityMixinInters1[0]
+	oidcidentityMixinFields0 := oidcidentityMixin[0].Fields()
+	_ = oidcidentityMixinFields0
+	oidcidentityMixinFields1 := oidcidentityMixin[1].Fields()
+	_ = oidcidentityMixinFields1
+	oidcidentityFields := schema.OIDCIdentity{}.Fields()
+	_ = oidcidentityFields
+	// oidcidentityDescCreatedAt is the schema descriptor for created_at field.
+	oidcidentityDescCreatedAt := oidcidentityMixinFields0[0].Descriptor()
+	// oidcidentity.DefaultCreatedAt holds the default value on creation for the created_at field.
+	oidcidentity.DefaultCreatedAt = oidcidentityDescCreatedAt.Default.(func() time.Time)
+	// oidcidentityDescUpdatedAt is the schema descriptor for updated_at field.
+	oidcidentityDescUpdatedAt := oidcidentityMixinFields0[1].Descriptor()
+	// oidcidentity.DefaultUpdatedAt holds the default value on creation for the updated_at field.
+	oidcidentity.DefaultUpdatedAt = oidcidentityDescUpdatedAt.Default.(func() time.Time)
+	// oidcidentity.UpdateDefaultUpdatedAt holds the default value on update for the updated_at field.
+	oidcidentity.UpdateDefaultUpdatedAt = oidcidentityDescUpdatedAt.UpdateDefault.(func() time.Time)
+	// oidcidentityDescDeletedAt is the schema descriptor for deleted_at field.
+	oidcidentityDescDeletedAt := oidcidentityMixinFields1[0].Descriptor()
+	// oidcidentity.DefaultDeletedAt holds the default value on creation for the deleted_at field.
+	oidcidentity.DefaultDeletedAt = oidcidentityDescDeletedAt.Default.(int)
 	projectMixin := schema.Project{}.Mixin()
 	project.Policy = privacy.NewPolicies(schema.Project{})
 	project.Hooks[0] = func(next ent.Mutator) ent.Mutator {
@@ -523,23 +607,23 @@ func init() {
 	// request.DefaultProjectID holds the default value on creation for the project_id field.
 	request.DefaultProjectID = requestDescProjectID.Default.(int)
 	// requestDescFormat is the schema descriptor for format field.
-	requestDescFormat := requestFields[6].Descriptor()
+	requestDescFormat := requestFields[7].Descriptor()
 	// request.DefaultFormat holds the default value on creation for the format field.
 	request.DefaultFormat = requestDescFormat.Default.(string)
 	// requestDescExternalID is the schema descriptor for external_id field.
-	requestDescExternalID := requestFields[12].Descriptor()
+	requestDescExternalID := requestFields[13].Descriptor()
 	// request.ExternalIDValidator is a validator for the "external_id" field. It is called by the builders before save.
 	request.ExternalIDValidator = requestDescExternalID.Validators[0].(func(string) error)
 	// requestDescStream is the schema descriptor for stream field.
-	requestDescStream := requestFields[14].Descriptor()
+	requestDescStream := requestFields[15].Descriptor()
 	// request.DefaultStream holds the default value on creation for the stream field.
 	request.DefaultStream = requestDescStream.Default.(bool)
 	// requestDescClientIP is the schema descriptor for client_ip field.
-	requestDescClientIP := requestFields[15].Descriptor()
+	requestDescClientIP := requestFields[16].Descriptor()
 	// request.DefaultClientIP holds the default value on creation for the client_ip field.
 	request.DefaultClientIP = requestDescClientIP.Default.(string)
 	// requestDescContentSaved is the schema descriptor for content_saved field.
-	requestDescContentSaved := requestFields[19].Descriptor()
+	requestDescContentSaved := requestFields[20].Descriptor()
 	// request.DefaultContentSaved holds the default value on creation for the content_saved field.
 	request.DefaultContentSaved = requestDescContentSaved.Default.(bool)
 	requestexecutionMixin := schema.RequestExecution{}.Mixin()

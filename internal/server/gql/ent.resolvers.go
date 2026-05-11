@@ -47,6 +47,22 @@ func (r *aPIKeyResolver) User(ctx context.Context, obj *ent.APIKey) (*ent.User, 
 }
 
 // ID is the resolver for the id field.
+func (r *aPIKeyProfileTemplateResolver) ID(ctx context.Context, obj *ent.APIKeyProfileTemplate) (*objects.GUID, error) {
+	return &objects.GUID{
+		Type: ent.TypeAPIKeyProfileTemplate,
+		ID:   obj.ID,
+	}, nil
+}
+
+// ProjectID is the resolver for the projectID field.
+func (r *aPIKeyProfileTemplateResolver) ProjectID(ctx context.Context, obj *ent.APIKeyProfileTemplate) (*objects.GUID, error) {
+	return &objects.GUID{
+		Type: ent.TypeProject,
+		ID:   obj.ProjectID,
+	}, nil
+}
+
+// ID is the resolver for the id field.
 func (r *channelResolver) ID(ctx context.Context, obj *ent.Channel) (*objects.GUID, error) {
 	return &objects.GUID{
 		Type: ent.TypeChannel,
@@ -200,6 +216,22 @@ func (r *modelResolver) ID(ctx context.Context, obj *ent.Model) (*objects.GUID, 
 }
 
 // ID is the resolver for the id field.
+func (r *oIDCIdentityResolver) ID(ctx context.Context, obj *ent.OIDCIdentity) (*objects.GUID, error) {
+	return &objects.GUID{
+		Type: ent.TypeOIDCIdentity,
+		ID:   obj.ID,
+	}, nil
+}
+
+// UserID is the resolver for the userID field.
+func (r *oIDCIdentityResolver) UserID(ctx context.Context, obj *ent.OIDCIdentity) (*objects.GUID, error) {
+	return &objects.GUID{
+		Type: ent.TypeUser,
+		ID:   obj.UserID,
+	}, nil
+}
+
+// ID is the resolver for the id field.
 func (r *projectResolver) ID(ctx context.Context, obj *ent.Project) (*objects.GUID, error) {
 	return &objects.GUID{
 		Type: ent.TypeProject,
@@ -275,6 +307,22 @@ func (r *queryResolver) APIKeys(ctx context.Context, after *entgql.Cursor[int], 
 	)
 }
 
+// APIKeyProfileTemplates is the resolver for the apiKeyProfileTemplates field.
+func (r *queryResolver) APIKeyProfileTemplates(ctx context.Context, after *entgql.Cursor[int], first *int, before *entgql.Cursor[int], last *int, orderBy *ent.APIKeyProfileTemplateOrder, where *ent.APIKeyProfileTemplateWhereInput) (*ent.APIKeyProfileTemplateConnection, error) {
+	if err := validatePaginationArgs(first, last); err != nil {
+		return nil, err
+	}
+
+	if orderBy != nil && orderBy.Field.String() == "CREATED_AT" {
+		orderBy.Field = ent.DefaultAPIKeyProfileTemplateOrder.Field
+	}
+
+	return r.client.APIKeyProfileTemplate.Query().Paginate(ctx, after, first, before, last,
+		ent.WithAPIKeyProfileTemplateOrder(orderBy),
+		ent.WithAPIKeyProfileTemplateFilter(where.Filter),
+	)
+}
+
 // Channels is the resolver for the channels field.
 func (r *queryResolver) Channels(ctx context.Context, after *entgql.Cursor[int], first *int, before *entgql.Cursor[int], last *int, orderBy *ent.ChannelOrder, where *ent.ChannelWhereInput) (*ent.ChannelConnection, error) {
 	if orderBy != nil && orderBy.Field.String() == "CREATED_AT" {
@@ -327,6 +375,18 @@ func (r *queryResolver) Models(ctx context.Context, after *entgql.Cursor[int], f
 	return r.client.Model.Query().Paginate(ctx, after, first, before, last,
 		ent.WithModelOrder(orderBy),
 		ent.WithModelFilter(where.Filter),
+	)
+}
+
+// OidcIdentities is the resolver for the oidcIdentities field.
+func (r *queryResolver) OidcIdentities(ctx context.Context, after *entgql.Cursor[int], first *int, before *entgql.Cursor[int], last *int, orderBy *ent.OIDCIdentityOrder, where *ent.OIDCIdentityWhereInput) (*ent.OIDCIdentityConnection, error) {
+	if err := validatePaginationArgs(first, last); err != nil {
+		return nil, err
+	}
+
+	return r.client.OIDCIdentity.Query().Paginate(ctx, after, first, before, last,
+		ent.WithOIDCIdentityOrder(orderBy),
+		ent.WithOIDCIdentityFilter(where.Filter),
 	)
 }
 
@@ -847,6 +907,11 @@ func (r *userRoleResolver) RoleID(ctx context.Context, obj *ent.UserRole) (*obje
 // APIKey returns APIKeyResolver implementation.
 func (r *Resolver) APIKey() APIKeyResolver { return &aPIKeyResolver{r} }
 
+// APIKeyProfileTemplate returns APIKeyProfileTemplateResolver implementation.
+func (r *Resolver) APIKeyProfileTemplate() APIKeyProfileTemplateResolver {
+	return &aPIKeyProfileTemplateResolver{r}
+}
+
 // Channel returns ChannelResolver implementation.
 func (r *Resolver) Channel() ChannelResolver { return &channelResolver{r} }
 
@@ -873,6 +938,9 @@ func (r *Resolver) DataStorage() DataStorageResolver { return &dataStorageResolv
 
 // Model returns ModelResolver implementation.
 func (r *Resolver) Model() ModelResolver { return &modelResolver{r} }
+
+// OIDCIdentity returns OIDCIdentityResolver implementation.
+func (r *Resolver) OIDCIdentity() OIDCIdentityResolver { return &oIDCIdentityResolver{r} }
 
 // Project returns ProjectResolver implementation.
 func (r *Resolver) Project() ProjectResolver { return &projectResolver{r} }
@@ -924,6 +992,7 @@ func (r *Resolver) UserProject() UserProjectResolver { return &userProjectResolv
 func (r *Resolver) UserRole() UserRoleResolver { return &userRoleResolver{r} }
 
 type aPIKeyResolver struct{ *Resolver }
+type aPIKeyProfileTemplateResolver struct{ *Resolver }
 type channelResolver struct{ *Resolver }
 type channelModelPriceResolver struct{ *Resolver }
 type channelModelPriceVersionResolver struct{ *Resolver }
@@ -931,6 +1000,7 @@ type channelOverrideTemplateResolver struct{ *Resolver }
 type channelProbeResolver struct{ *Resolver }
 type dataStorageResolver struct{ *Resolver }
 type modelResolver struct{ *Resolver }
+type oIDCIdentityResolver struct{ *Resolver }
 type projectResolver struct{ *Resolver }
 type promptResolver struct{ *Resolver }
 type promptProtectionRuleResolver struct{ *Resolver }

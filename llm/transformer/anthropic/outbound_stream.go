@@ -16,6 +16,7 @@ import (
 
 func (t *OutboundTransformer) TransformStream(
 	ctx context.Context,
+	req *httpclient.Request,
 	stream streams.Stream[*httpclient.StreamEvent],
 ) (streams.Stream[*llm.Response], error) {
 	// Filter out unnecessary stream events to optimize performance
@@ -24,10 +25,9 @@ func (t *OutboundTransformer) TransformStream(
 	// Append the DONE event to the filtered stream
 	streamWithDone := streams.AppendStream(filteredStream, lo.ToPtr(llm.DoneStreamEvent))
 
-	scope, _ := shared.GetTransportScope(ctx)
 	signatureMode := resolveSignatureMode(ctx, t.config)
 
-	return streams.NoNil(newOutboundStream(streamWithDone, t.config.Type, scope, signatureMode)), nil
+	return streams.NoNil(newOutboundStream(streamWithDone, t.config.Type, signatureMode)), nil
 }
 
 // filterStreamEvent determines if a stream event should be processed
@@ -56,7 +56,6 @@ type streamState struct {
 	streamModel   string
 	streamUsage   *llm.Usage
 	platformType  PlatformType
-	scope         shared.TransportScope
 	signatureMode AnthropicSignatureMode
 	// Tool call tracking
 	toolIndex int
@@ -74,7 +73,6 @@ type outboundStream struct {
 func newOutboundStream(
 	stream streams.Stream[*httpclient.StreamEvent],
 	platformType PlatformType,
-	scope shared.TransportScope,
 	signatureMode AnthropicSignatureMode,
 ) *outboundStream {
 	return &outboundStream{
@@ -83,7 +81,6 @@ func newOutboundStream(
 			toolCalls:     make(map[int]*llm.ToolCall),
 			toolIndex:     -1,
 			platformType:  platformType,
-			scope:         scope,
 			signatureMode: signatureMode,
 		},
 	}
@@ -246,7 +243,7 @@ func (s *outboundStream) transformStreamChunk(event *httpclient.StreamEvent) (*l
 				if s.state.signatureMode == AnthropicSignatureModePassthrough {
 					choice.Delta.ReasoningSignature = streamEvent.Delta.Signature
 				} else {
-					choice.Delta.ReasoningSignature = shared.EncodeAnthropicSignatureInScope(streamEvent.Delta.Signature, s.state.scope)
+					choice.Delta.ReasoningSignature = shared.EncodeAnthropicSignature(streamEvent.Delta.Signature)
 				}
 			}
 
@@ -261,6 +258,7 @@ func (s *outboundStream) transformStreamChunk(event *httpclient.StreamEvent) (*l
 				if usage.PromptTokens == 0 && state.streamUsage.PromptTokens > 0 {
 					usage.PromptTokens = state.streamUsage.PromptTokens
 				}
+
 				if usage.PromptTokensDetails == nil && state.streamUsage.PromptTokensDetails != nil {
 					usage.PromptTokensDetails = state.streamUsage.PromptTokensDetails
 				}
@@ -348,6 +346,7 @@ func parseAnthropicStreamErrorEvent(event *httpclient.StreamEvent) *llm.Response
 	}
 
 	root := gjson.ParseBytes(event.Data)
+
 	candidate := root
 	if root.Get("event").String() == "error" {
 		if d := root.Get("data"); d.Exists() {
@@ -368,9 +367,11 @@ func parseAnthropicStreamErrorEvent(event *httpclient.StreamEvent) *llm.Response
 	if detail.Message == "" {
 		detail.Message = candidate.Get("message").String()
 	}
+
 	if detail.Message == "" && errObj.Exists() {
 		detail.Message = errObj.String()
 	}
+
 	if detail.Message == "" {
 		detail.Message = "stream error"
 	}

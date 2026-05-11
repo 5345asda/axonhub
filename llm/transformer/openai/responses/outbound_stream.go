@@ -3,6 +3,7 @@ package responses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -15,17 +16,21 @@ import (
 	"github.com/looplj/axonhub/llm/transformer/shared"
 )
 
+// ErrStreamIncomplete is returned when the stream ends without a terminal event
+// (response.completed, response.failed, or response.incomplete).
+var ErrStreamIncomplete = errors.New("stream ended without terminal event")
+
 // TransformStream transforms OpenAI Responses API SSE events to unified llm.Response stream.
 func (t *OutboundTransformer) TransformStream(
 	ctx context.Context,
+	req *httpclient.Request,
 	stream streams.Stream[*httpclient.StreamEvent],
 ) (streams.Stream[*llm.Response], error) {
 	// Append the DONE event to the stream
 	doneEvent := lo.ToPtr(llm.DoneStreamEvent)
 	streamWithDone := streams.AppendStream(stream, doneEvent)
 
-	scope, _ := shared.GetTransportScope(ctx)
-	return streams.NoNil(newResponsesOutboundStream(streamWithDone, scope)), nil
+	return streams.NoNil(newResponsesOutboundStream(streamWithDone)), nil
 }
 
 // responsesOutboundStream wraps a stream and maintains state during processing.
@@ -37,6 +42,9 @@ type responsesOutboundStream struct {
 	eventQueue []*llm.Response
 	queueIndex int
 	err        error
+
+	// Track whether the response completed successfully
+	responseCompleted bool
 }
 
 // outboundStreamState holds the state for a streaming session.
@@ -46,7 +54,6 @@ type outboundStreamState struct {
 	previousResponseID *string
 	usage              *llm.Usage
 	created            int64
-	scope              shared.TransportScope
 
 	// Content accumulation
 	textContent      strings.Builder
@@ -62,7 +69,7 @@ type outboundStreamState struct {
 	hasEncryptedReasoning   bool
 }
 
-func newResponsesOutboundStream(stream streams.Stream[*httpclient.StreamEvent], scope shared.TransportScope) *responsesOutboundStream {
+func newResponsesOutboundStream(stream streams.Stream[*httpclient.StreamEvent]) *responsesOutboundStream {
 	return &responsesOutboundStream{
 		stream: stream,
 		state: &outboundStreamState{
@@ -70,7 +77,6 @@ func newResponsesOutboundStream(stream streams.Stream[*httpclient.StreamEvent], 
 			itemToCallID:            make(map[string]string),
 			toolCallIndex:           make(map[string]int),
 			encryptedContentEmitted: make(map[string]bool),
-			scope:                   scope,
 		},
 	}
 }
@@ -91,6 +97,15 @@ func (s *responsesOutboundStream) Next() bool {
 
 	// Try to get the next chunk from source
 	if !s.stream.Next() {
+		// Stream ended - check if we received a terminal event
+		// If not, this is an incomplete stream (e.g., upstream EOF)
+		if s.err == nil && !s.responseCompleted && s.stream.Err() == nil {
+			// Only set this error if we had started receiving response data
+			// This distinguishes between "no response" and "incomplete response"
+			if s.state.responseID != "" {
+				s.err = ErrStreamIncomplete
+			}
+		}
 		return false
 	}
 
@@ -206,7 +221,7 @@ func (s *responsesOutboundStream) transformStreamChunk(event *httpclient.StreamE
 					{
 						Index: 0,
 						Delta: &llm.Message{
-							ReasoningSignature: shared.EncodeOpenAIEncryptedContentInScope(item.EncryptedContent, s.state.scope),
+							ReasoningSignature: shared.EncodeOpenAIEncryptedContent(item.EncryptedContent),
 						},
 					},
 				}
@@ -422,6 +437,7 @@ func (s *responsesOutboundStream) transformStreamChunk(event *httpclient.StreamE
 
 	case StreamEventTypeResponseCompleted:
 		// Response completed - emit two events: one with finish_reason, one with usage
+		s.responseCompleted = true
 		if streamEvent.Response != nil {
 			s.state.previousResponseID = streamEvent.Response.PreviousResponseID
 			resp.PreviousResponseID = s.state.previousResponseID
@@ -462,6 +478,7 @@ func (s *responsesOutboundStream) transformStreamChunk(event *httpclient.StreamE
 
 	case StreamEventTypeResponseFailed:
 		// Response failed
+		s.responseCompleted = true
 		finishReason := "error"
 		resp.Choices = []llm.Choice{
 			{
@@ -472,6 +489,7 @@ func (s *responsesOutboundStream) transformStreamChunk(event *httpclient.StreamE
 
 	case StreamEventTypeResponseIncomplete:
 		// Response incomplete (e.g., max tokens)
+		s.responseCompleted = true
 		finishReason := "length"
 		resp.Choices = []llm.Choice{
 			{
@@ -557,7 +575,7 @@ func (s *responsesOutboundStream) Close() error {
 
 // AggregateStreamChunks aggregates OpenAI Responses API streaming chunks into a complete response.
 func (t *OutboundTransformer) AggregateStreamChunks(
-	ctx context.Context,
+	ctx context.Context, _ *httpclient.Request,
 	chunks []*httpclient.StreamEvent,
 ) ([]byte, llm.ResponseMeta, error) {
 	return AggregateStreamChunks(ctx, chunks)

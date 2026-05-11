@@ -146,16 +146,33 @@ input UpdateRetryPolicyInput {
   emptyResponseDetection: Boolean
 }
 
+enum QuotaEnforcementMode {
+  EXHAUSTED_ONLY
+  DE_PRIORITIZE
+}
+
+type QuotaEnforcementSettings {
+  enabled: Boolean!
+  mode: QuotaEnforcementMode!
+}
+
+input UpdateQuotaEnforcementSettingsInput {
+  enabled: Boolean
+  mode: QuotaEnforcementMode
+}
+
 type SystemModelSettings {
   fallbackToChannelsOnModelNotFound: Boolean!
   queryAllChannelModels: Boolean!
   defaultModelAPIIncludeAll: Boolean!
+  autoReasoningEffort: Boolean!
 }
 
 input UpdateSystemModelSettingsInput {
   fallbackToChannelsOnModelNotFound: Boolean
   queryAllChannelModels: Boolean
   defaultModelAPIIncludeAll: Boolean
+  autoReasoningEffort: Boolean
 }
 
 input UpdateDefaultDataStorageInput {
@@ -263,6 +280,14 @@ input UpdateUserAgentPassThroughSettingsInput {
   enabled: Boolean!
 }
 
+type PassThroughSettings {
+  enabled: Boolean!
+}
+
+input UpdatePassThroughSettingsInput {
+  enabled: Boolean!
+}
+
 
 type ProxyPreset {
   name: String
@@ -291,11 +316,13 @@ extend type Mutation {
   updateSystemChannelSettings(input: UpdateSystemChannelSettingsInput!): Boolean!
   updateSystemGeneralSettings(input: UpdateSystemGeneralSettingsInput!): Boolean!
   updateVideoStorageSettings(input: UpdateVideoStorageSettingsInput!): Boolean!
+  updateQuotaEnforcementSettings(input: UpdateQuotaEnforcementSettingsInput!): Boolean!
   checkProviderQuotas: Boolean!
   triggerGcCleanup: Boolean!
   saveProxyPreset(input: SaveProxyPresetInput!): Boolean!
   deleteProxyPreset(url: String!): Boolean!
   updateUserAgentPassThroughSettings(input: UpdateUserAgentPassThroughSettingsInput!): Boolean!
+  updatePassThroughSettings(input: UpdatePassThroughSettingsInput!): Boolean!
 }
 
 type SystemVersion {
@@ -352,8 +379,10 @@ extend type Query {
   systemChannelSettings: SystemChannelSettings!
   systemGeneralSettings: SystemGeneralSettings!
   videoStorageSettings: VideoStorageSettings!
+  quotaEnforcementSettings: QuotaEnforcementSettings!
   proxyPresets: [ProxyPreset!]!
   userAgentPassThroughSettings: UserAgentPassThroughSettings!
+  passThroughSettings: PassThroughSettings!
   getCacheDiagnostics(input: GetCacheDiagnosticsInput): GetCacheDiagnosticsPayload!
 }
 

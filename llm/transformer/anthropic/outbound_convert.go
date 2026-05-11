@@ -14,18 +14,72 @@ import (
 // convertToAnthropicRequest converts ChatCompletionRequest to Anthropic MessageRequest.
 // Deprecated: Use convertToAnthropicRequestWithConfig instead.
 func convertToAnthropicRequest(chatReq *llm.Request) *MessageRequest {
-	return convertToAnthropicRequestWithConfig(chatReq, nil, shared.TransportScope{})
+	return convertToAnthropicRequestWithConfig(chatReq, nil)
 }
 
-// convertToAnthropicRequestWithConfig converts ChatCompletionRequest to Anthropic MessageRequest with config.
-func convertToAnthropicRequestWithConfig(chatReq *llm.Request, config *Config, scope shared.TransportScope) *MessageRequest {
+func convertToAnthropicRequestWithConfig(chatReq *llm.Request, config *Config) *MessageRequest {
 	req := buildBaseRequest(chatReq, config)
 	req.Tools = convertToolsAnthropic(chatReq.Tools, config)
 	req.ToolChoice = convertToolChoiceToAnthropic(chatReq.ToolChoice)
-	req.Messages = convertMessages(chatReq, scope, config)
+	req.Messages = convertMessages(chatReq, config)
 	req.StopSequences = convertStopSequences(chatReq.Stop)
 
+	// DeepSeek requires assistant messages in history to include a thinking block
+	// when thinking is enabled (matching their OpenAI API behavior).
+	if config != nil && config.Type == PlatformDeepSeek && isThinkingEnabled(req) {
+		ensureAssistantThinkingBlocks(req.Messages)
+	}
+
 	return req
+}
+
+func isThinkingEnabled(req *MessageRequest) bool {
+	return req.Thinking == nil || req.Thinking.Type != "disabled"
+}
+
+func ensureAssistantThinkingBlocks(messages []MessageParam) {
+	for i, msg := range messages {
+		if msg.Role != "assistant" {
+			continue
+		}
+
+		if hasThinkingBlock(msg) {
+			continue
+		}
+
+		emptyThinking := ""
+		thinkingBlock := MessageContentBlock{
+			Type:     "thinking",
+			Thinking: &emptyThinking,
+		}
+
+		if msg.Content.Content != nil {
+			// Convert simple string content to multiple content with thinking + text
+			textBlock := MessageContentBlock{
+				Type: "text",
+				Text: msg.Content.Content,
+			}
+			messages[i].Content = MessageContent{
+				MultipleContent: []MessageContentBlock{thinkingBlock, textBlock},
+			}
+		} else {
+			// Prepend thinking block to existing multiple content
+			messages[i].Content.MultipleContent = append(
+				[]MessageContentBlock{thinkingBlock},
+				messages[i].Content.MultipleContent...,
+			)
+		}
+	}
+}
+
+func hasThinkingBlock(msg MessageParam) bool {
+	for _, block := range msg.Content.MultipleContent {
+		if block.Type == "thinking" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func shouldDecodeAnthropicSignature(config *Config) bool {
@@ -41,18 +95,16 @@ func shouldDecodeAnthropicSignature(config *Config) bool {
 	}
 }
 
-func prepareAnthropicReasoning(reasoningContent, reasoningSignature *string, scope shared.TransportScope, config *Config) (*string, *string) {
+func prepareAnthropicReasoning(reasoningContent, reasoningSignature *string, config *Config) (*string, *string) {
 	if reasoningSignature == nil || *reasoningSignature == "" {
 		return reasoningContent, reasoningSignature
 	}
 
 	if shouldDecodeAnthropicSignature(config) {
-		if scope.Footprint() == "" {
-			return reasoningContent, reasoningSignature
-		}
-		if decoded := shared.DecodeAnthropicSignatureInScope(reasoningSignature, scope); decoded != nil {
+		if decoded := shared.DecodeAnthropicSignature(reasoningSignature); decoded != nil {
 			return reasoningContent, decoded
 		}
+
 		return nil, nil
 	}
 
@@ -74,14 +126,33 @@ func buildBaseRequest(chatReq *llm.Request, config *Config) *MessageRequest {
 		req.Metadata = &AnthropicMetadata{UserID: chatReq.Metadata["user_id"]}
 	}
 
-	// Determine thinking config priority: adaptive > enabled > disabled
+	// DeepSeek Anthropic format supports output_config.effort. When reasoning_effort
+	// is present, prefer output_config over thinking so suffix-based effort routing
+	// (for example deepseek-chat-max) preserves the explicit effort level.
+	// Note: "none" is not a valid effort value, so skip it (it means disabled thinking).
+	if config != nil && config.Type == PlatformDeepSeek && chatReq.ReasoningEffort != "" && chatReq.ReasoningEffort != "none" {
+		req.OutputConfig = &OutputConfig{Effort: chatReq.ReasoningEffort}
+	}
+
+	// Determine thinking config priority: disabled > adaptive > enabled
 	if chatReq.TransformerMetadata != nil {
-		if v, ok := chatReq.TransformerMetadata[TransformerMetadataKeyThinkingType].(string); ok && v == "adaptive" {
-			req.Thinking = &Thinking{Type: "adaptive"}
+		if v, ok := chatReq.TransformerMetadata[TransformerMetadataKeyThinkingType].(string); ok {
+			switch v {
+			case "disabled":
+				req.Thinking = &Thinking{Type: "disabled"}
+			case "adaptive":
+				req.Thinking = &Thinking{Type: "adaptive"}
+			}
 		}
 	}
 
-	if req.Thinking == nil && (chatReq.ReasoningEffort != "" || chatReq.ReasoningBudget != nil) {
+	// Handle ReasoningEffort="none" as disabled thinking (e.g., from OpenAI inbound)
+	// This check is needed when TransformerMetadata is not set but ReasoningEffort is "none"
+	if req.Thinking == nil && chatReq.ReasoningEffort == "none" {
+		req.Thinking = &Thinking{Type: "disabled"}
+	}
+
+	if req.OutputConfig == nil && req.Thinking == nil && chatReq.ReasoningEffort != "none" && (chatReq.ReasoningEffort != "" || chatReq.ReasoningBudget != nil) {
 		req.Thinking = buildThinking(chatReq, config)
 	}
 
@@ -95,7 +166,7 @@ func buildBaseRequest(chatReq *llm.Request, config *Config) *MessageRequest {
 	// Restore output_config from TransformerMetadata
 	if chatReq.TransformerMetadata != nil {
 		if effort, ok := chatReq.TransformerMetadata[TransformerMetadataKeyOutputConfigEffort].(string); ok && effort != "" {
-			if supportsAdaptiveThinking(config) {
+			if supportsOutputConfig(config) {
 				req.OutputConfig = &OutputConfig{Effort: effort}
 			} else if req.Thinking == nil || req.Thinking.Type == "adaptive" {
 				req.Thinking = &Thinking{
@@ -247,7 +318,7 @@ func convertStopSequences(stop *llm.Stop) []string {
 }
 
 // convertMessages converts all messages to Anthropic format.
-func convertMessages(chatReq *llm.Request, scope shared.TransportScope, config *Config) []MessageParam {
+func convertMessages(chatReq *llm.Request, config *Config) []MessageParam {
 	messages := make([]MessageParam, 0, len(chatReq.Messages))
 	// First, filter out system and developer messages as they are handled separately.
 	nonSystemMsgs := lo.Filter(chatReq.Messages, func(msg llm.Message, _ int) bool {
@@ -280,12 +351,12 @@ func convertMessages(chatReq *llm.Request, scope shared.TransportScope, config *
 				continue
 			}
 
-			if converted, ok := convertUserMessage(msg, scope); ok {
+			if converted, ok := convertUserMessage(msg); ok {
 				messages = append(messages, converted...)
 			}
 		case "assistant":
 			// Convert the assistant message.
-			if assistantMsg, ok := convertAssistantMessage(msg, scope, config); ok {
+			if assistantMsg, ok := convertAssistantMessage(msg, config); ok {
 				messages = append(messages, assistantMsg...)
 			}
 
@@ -468,8 +539,8 @@ func extractUserContentBlocks(msg llm.Message) []MessageContentBlock {
 }
 
 // convertUserMessage handles user message conversion.
-func convertUserMessage(msg llm.Message, scope shared.TransportScope) ([]MessageParam, bool) {
-	content, ok := buildMessageContent(msg, scope, nil)
+func convertUserMessage(msg llm.Message) ([]MessageParam, bool) {
+	content, ok := buildMessageContent(msg, nil)
 	if !ok {
 		return nil, false
 	}
@@ -478,13 +549,13 @@ func convertUserMessage(msg llm.Message, scope shared.TransportScope) ([]Message
 }
 
 // convertAssistantMessage handles assistant message conversion.
-func convertAssistantMessage(msg llm.Message, scope shared.TransportScope, config *Config) ([]MessageParam, bool) {
-	return convertAssistantWithToolCalls(msg, scope, config)
+func convertAssistantMessage(msg llm.Message, config *Config) ([]MessageParam, bool) {
+	return convertAssistantWithToolCalls(msg, config)
 }
 
 // convertAssistantWithToolCalls handles assistant messages that have tool calls.
-func convertAssistantWithToolCalls(msg llm.Message, scope shared.TransportScope, config *Config) ([]MessageParam, bool) {
-	preBlocks := buildPreBlocks(msg, scope, config)
+func convertAssistantWithToolCalls(msg llm.Message, config *Config) ([]MessageParam, bool) {
+	preBlocks := buildPreBlocks(msg, config)
 	toolContent, hasToolContent := convertMultiplePartContent(msg)
 
 	switch {
@@ -502,13 +573,12 @@ func convertAssistantWithToolCalls(msg llm.Message, scope shared.TransportScope,
 }
 
 // buildPreBlocks creates thinking and text blocks that precede tool use.
-func buildPreBlocks(msg llm.Message, scope shared.TransportScope, config *Config) []MessageContentBlock {
+func buildPreBlocks(msg llm.Message, config *Config) []MessageContentBlock {
 	var blocks []MessageContentBlock
 
 	reasoningContent, reasoningSignature := prepareAnthropicReasoning(
 		msg.ReasoningContent,
 		msg.ReasoningSignature,
-		scope,
 		config,
 	)
 
@@ -541,11 +611,11 @@ func buildContentFromBlocks(blocks []MessageContentBlock) MessageContent {
 }
 
 // buildMessageContent creates message content with optional thinking block.
-func buildMessageContent(msg llm.Message, scope shared.TransportScope, config *Config) (MessageContent, bool) {
+func buildMessageContent(msg llm.Message, config *Config) (MessageContent, bool) {
 	// Handle simple string content
 	if msg.Content.Content != nil {
 		if msg.CacheControl != nil || hasThinkingContent(msg) {
-			return buildMultipleContentWithThinking(msg, scope, config), true
+			return buildMultipleContentWithThinking(msg, config), true
 		}
 
 		return MessageContent{Content: msg.Content.Content}, true
@@ -583,13 +653,12 @@ func hasThinkingContent(msg llm.Message) bool {
 }
 
 // buildMultipleContentWithThinking creates content blocks including thinking.
-func buildMultipleContentWithThinking(msg llm.Message, scope shared.TransportScope, config *Config) MessageContent {
+func buildMultipleContentWithThinking(msg llm.Message, config *Config) MessageContent {
 	blocks := make([]MessageContentBlock, 0, 3)
 
 	reasoningContent, reasoningSignature := prepareAnthropicReasoning(
 		msg.ReasoningContent,
 		msg.ReasoningSignature,
-		scope,
 		config,
 	)
 
@@ -902,14 +971,13 @@ func convertMultiplePartContent(msg llm.Message) (MessageContent, bool) {
 }
 
 // convertToLlmResponse converts Anthropic Message to unified Response format.
-func convertToLlmResponse(anthropicResp *Message, platformType PlatformType, scope shared.TransportScope) *llm.Response {
-	return convertToLlmResponseWithConfig(anthropicResp, platformType, scope, nil, context.Background())
+func convertToLlmResponse(anthropicResp *Message, platformType PlatformType) *llm.Response {
+	return convertToLlmResponseWithConfig(anthropicResp, platformType, nil, context.Background())
 }
 
 func convertToLlmResponseWithConfig(
 	anthropicResp *Message,
 	platformType PlatformType,
-	scope shared.TransportScope,
 	config *Config,
 	ctx context.Context,
 ) *llm.Response {
@@ -1003,7 +1071,7 @@ func convertToLlmResponseWithConfig(
 
 	reasoningSignature := thinkingSignature
 	if resolveSignatureMode(ctx, config) != AnthropicSignatureModePassthrough {
-		reasoningSignature = shared.EncodeAnthropicSignatureInScope(thinkingSignature, scope)
+		reasoningSignature = shared.EncodeAnthropicSignature(thinkingSignature)
 	}
 
 	message := &llm.Message{

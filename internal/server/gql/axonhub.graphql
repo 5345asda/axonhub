@@ -70,6 +70,23 @@ type ProxyConfig {
   password: String
 }
 
+type ChannelEndpoint {
+  apiFormat: String!
+  path: String
+  baseURL: String
+}
+
+input ChannelEndpointInput {
+  apiFormat: String!
+  path: String
+  baseURL: String
+}
+
+input SaveChannelEndpointsInput {
+  channelID: ID!
+  endpoints: [ChannelEndpointInput!]!
+}
+
 input ProxyConfigInput {
   type: ProxyType!
   url: String
@@ -83,6 +100,7 @@ type ChannelSettings {
   autoTrimedModelPrefixes: [String!]
   hideOriginalModels: Boolean
   hideMappedModels: Boolean
+  lowercaseModelId: Boolean
   proxy: ProxyConfig
   transformOptions: TransformOptions
   headerOverrideOperations: [OverrideOperation!]! @goField(forceResolver: true)
@@ -117,6 +135,7 @@ input ChannelSettingsInput {
   autoTrimedModelPrefixes: [String!]
   hideOriginalModels: Boolean
   hideMappedModels: Boolean
+  lowercaseModelId: Boolean
   proxy: ProxyConfigInput
   transformOptions: TransformOptionsInput
   headerOverrideOperations: [OverrideOperationInput!]
@@ -130,12 +149,16 @@ input ChannelRateLimitInput {
   rpm: Int
   tpm: Int
   maxConcurrent: Int
+  queueSize: Int
+  queueTimeoutMs: Int
 }
 
 type ChannelRateLimit {
   rpm: Int
   tpm: Int
   maxConcurrent: Int
+  queueSize: Int
+  queueTimeoutMs: Int
 }
 
 type ChannelCredentials {
@@ -343,6 +366,16 @@ enum ChannelTagsMatchMode {
   any
   all
   none
+}
+
+# ApiKeyProfileTemplate uses the Ent-generated type and input types from ent.graphql
+
+
+
+# Load template input - custom input for loading template to API key
+input LoadApiKeyProfileTemplateInput {
+  templateID: ID!
+  apiKeyID: ID!
 }
 
 input APIKeyQuotaInput {
@@ -560,6 +593,13 @@ extend type Thread {
 
 extend type Channel {
   """
+  Built-in endpoints resolved dynamically from the channel type.
+  The first item is the primary endpoint.
+  These are displayed to users but are not directly editable.
+  """
+  defaultEndpoints: [ChannelEndpoint!]! @goField(forceResolver: true)
+
+  """
   All model entries this channel can handle, including direct models, prefixed models, auto-trimmed models, and mapped models
   """
   allModelEntries: [ChannelModelEntry!]! @goField(forceResolver: true)
@@ -573,6 +613,34 @@ extend type Channel {
   Disabled API keys for this channel. Sensitive: will be null if user can not access.
   """
   disabledAPIKeys: [DisabledAPIKey!] @goField(forceResolver: true)
+
+  """
+  Real-time per-channel concurrency limiter snapshot. Returns null when the channel
+  has no MaxConcurrent configured (no admission control).
+  """
+  liveLimiterStats: ChannelLimiterStats @goField(forceResolver: true)
+}
+
+"""
+ChannelLimiterStats is a point-in-time snapshot of the per-channel concurrency limiter.
+"""
+type ChannelLimiterStats {
+  """
+  Number of requests currently holding a capacity slot.
+  """
+  inFlight: Int!
+  """
+  Number of requests currently waiting in the FIFO queue.
+  """
+  waiting: Int!
+  """
+  Configured MaxConcurrent (capacity ceiling).
+  """
+  capacity: Int!
+  """
+  Configured QueueSize (0 means soft mode — no waiting queue, only counts).
+  """
+  queueSize: Int!
 }
 
 type Segment {
@@ -688,6 +756,7 @@ type Mutation {
   createChannel(input: CreateChannelInput!): Channel!
   bulkCreateChannels(input: BulkCreateChannelsInput!): [Channel!]!
   updateChannel(id: ID!, input: UpdateChannelInput!): Channel!
+  saveChannelEndpoints(input: SaveChannelEndpointsInput!): Channel!
   updateChannelStatus(id: ID!, status: ChannelStatus!): Channel!
   deleteChannel(id: ID!): Boolean!
   bulkArchiveChannels(ids: [ID!]!): Boolean!
@@ -761,6 +830,21 @@ type Mutation {
 
   # Trigger immediate model sync for a channel
   syncChannelModels(channelID: ID!, pattern: String): SyncChannelModelsPayload!
+
+  # API Key Profile Template Mutations
+  createApiKeyProfileTemplate(
+    input: CreateAPIKeyProfileTemplateInput!
+    profile: APIKeyProfileInput!
+  ): APIKeyProfileTemplate!
+  updateApiKeyProfileTemplate(
+    id: ID!
+    input: UpdateAPIKeyProfileTemplateInput!
+    profile: APIKeyProfileInput
+  ): APIKeyProfileTemplate!
+  deleteApiKeyProfileTemplate(id: ID!): APIKeyProfileTemplate!
+  loadApiKeyProfileTemplate(
+    input: LoadApiKeyProfileTemplateInput!
+  ): APIKey!
 }
 
 input QueryChannelInput {

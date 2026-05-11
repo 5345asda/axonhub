@@ -129,6 +129,7 @@ func (s *Stop) UnmarshalJSON(data []byte) error {
 	if err == nil {
 		s.Stop = &str
 		s.MultipleStop = nil
+
 		return nil
 	}
 
@@ -138,6 +139,7 @@ func (s *Stop) UnmarshalJSON(data []byte) error {
 	if err == nil {
 		s.Stop = nil
 		s.MultipleStop = strs
+
 		return nil
 	}
 
@@ -225,6 +227,7 @@ func (c *MessageContent) UnmarshalJSON(data []byte) error {
 	if err == nil {
 		c.Content = &str
 		c.MultipleContent = nil
+
 		return nil
 	}
 
@@ -234,6 +237,7 @@ func (c *MessageContent) UnmarshalJSON(data []byte) error {
 	if err == nil {
 		c.Content = nil
 		c.MultipleContent = parts
+
 		return nil
 	}
 
@@ -365,7 +369,7 @@ type Function struct {
 
 // FunctionCall represents a function call.
 type FunctionCall struct {
-	Name      string `json:"name"`
+	Name      string `json:"name,omitempty"`
 	Arguments string `json:"arguments"`
 }
 

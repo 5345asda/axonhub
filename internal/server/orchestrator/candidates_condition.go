@@ -27,7 +27,10 @@ func filterResolvedCandidatesForRequest(
 		return candidate != nil && candidate.when != nil
 	})
 	if !hasConditionalCandidates {
-		return aggregateChannelModelCandidates(resolvedCandidates)
+		candidates := aggregateChannelModelCandidates(resolvedCandidates)
+		populateAPIFormat(candidates, req)
+
+		return candidates
 	}
 
 	promptTokens := estimatePromptTokens(req)
@@ -46,6 +49,8 @@ func filterResolvedCandidatesForRequest(
 		filtered = append(filtered, candidate)
 	}
 
+	candidates := aggregateChannelModelCandidates(filtered)
+
 	if log.DebugEnabled(ctx) {
 		log.Debug(ctx, "evaluated conditional associations",
 			log.Int64("estimated_prompt_tokens", promptTokens),
@@ -53,7 +58,24 @@ func filterResolvedCandidatesForRequest(
 		)
 	}
 
-	return aggregateChannelModelCandidates(filtered)
+	populateAPIFormat(candidates, req)
+
+	return candidates
+}
+
+func populateAPIFormat(candidates []*ChannelModelsCandidate, req *llm.Request) {
+	for _, c := range candidates {
+		if c == nil || c.Channel == nil {
+			continue
+		}
+
+		if c.APIFormat != "" {
+			continue
+		}
+
+		endpoints := c.Channel.ResolveEndpoints()
+		c.APIFormat = SelectAPIFormat(endpoints, req)
+	}
 }
 
 func reqStream(req *llm.Request) bool {

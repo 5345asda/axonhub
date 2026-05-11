@@ -349,6 +349,7 @@ func TestTransformRequest_Integration(t *testing.T) {
 			require.NoError(t, err)
 
 			var gotReq MessageRequest
+
 			err = json.Unmarshal(outboundReq.Body, &gotReq)
 			require.NoError(t, err)
 
@@ -478,7 +479,7 @@ func TestAnthropicTransformers_StreamingIntegration(t *testing.T) {
 	}
 
 	// Aggregate the streaming chunks
-	chatRespBytes, _, err := outboundTransformer.AggregateStreamChunks(t.Context(), chunks)
+	chatRespBytes, _, err := outboundTransformer.AggregateStreamChunks(t.Context(), nil, chunks)
 	require.NoError(t, err)
 	require.NotNil(t, chatRespBytes)
 

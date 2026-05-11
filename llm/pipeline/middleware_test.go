@@ -50,7 +50,7 @@ func (t *testOutbound) TransformResponse(ctx context.Context, response *httpclie
 	return &llm.Response{}, nil
 }
 
-func (t *testOutbound) TransformStream(ctx context.Context, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
+func (t *testOutbound) TransformStream(ctx context.Context, req *httpclient.Request, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
 	return streams.SliceStream([]*llm.Response{}), nil
 }
 
@@ -58,7 +58,7 @@ func (t *testOutbound) TransformError(ctx context.Context, err *httpclient.Error
 	return &llm.ResponseError{}
 }
 
-func (t *testOutbound) AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {
+func (t *testOutbound) AggregateStreamChunks(ctx context.Context, _ *httpclient.Request, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {
 	return []byte(`{}`), llm.ResponseMeta{}, nil
 }
 
@@ -116,6 +116,7 @@ func (m *trackingMiddleware) OnInboundRawResponse(ctx context.Context, response 
 func (m *trackingMiddleware) OnInboundRawStream(ctx context.Context, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*httpclient.StreamEvent], error) {
 	m.inboundRawStreamCalled = true
 	*m.callOrder = append(*m.callOrder, m.name+":OnInboundRawStream")
+
 	return stream, nil
 }
 
@@ -719,4 +720,40 @@ func (f *failingExecutor) Do(ctx context.Context, request *httpclient.Request) (
 
 func (f *failingExecutor) DoStream(ctx context.Context, request *httpclient.Request) (streams.Stream[*httpclient.StreamEvent], error) {
 	return nil, errors.New("executor stream error")
+}
+
+func TestMiddleware_RawRequest_Error_CleanupMiddlewares(t *testing.T) {
+	ctx := context.Background()
+	callOrder := []string{}
+
+	m1 := newTrackingMiddleware("M1", &callOrder)
+	m2 := newTrackingMiddleware("M2", &callOrder)
+	m2.shouldFailOnRawRequest = true
+	m3 := newTrackingMiddleware("M3", &callOrder)
+
+	exec := &testExecutor{}
+	factory := NewFactory(exec)
+
+	p := factory.Pipeline(
+		&testInbound{},
+		&testOutbound{},
+		WithMiddlewares(m1, m2, m3),
+	)
+
+	request := &httpclient.Request{}
+	result, err := p.Process(ctx, request)
+
+	require.Error(t, err)
+	require.Nil(t, result)
+	require.Contains(t, err.Error(), "raw request middleware error")
+
+	require.True(t, m1.outboundRequestCalled)
+	require.True(t, m2.outboundRequestCalled)
+	require.False(t, m3.outboundRequestCalled)
+
+	require.True(t, m1.outboundRawErrorCalled,
+		"already-executed middleware must receive OnOutboundRawError for cleanup")
+	require.True(t, m2.outboundRawErrorCalled)
+	require.True(t, m3.outboundRawErrorCalled,
+		"unexecuted middleware must receive OnOutboundRawError for unconditional cleanup")
 }

@@ -81,6 +81,56 @@ func (c *APIKeyUpdateOne) SetInput(i UpdateAPIKeyInput) *APIKeyUpdateOne {
 	return c
 }
 
+// CreateAPIKeyProfileTemplateInput represents a mutation input for creating apikeyprofiletemplates.
+type CreateAPIKeyProfileTemplateInput struct {
+	Name        string
+	Description *string
+	ProjectID   int
+}
+
+// Mutate applies the CreateAPIKeyProfileTemplateInput on the APIKeyProfileTemplateMutation builder.
+func (i *CreateAPIKeyProfileTemplateInput) Mutate(m *APIKeyProfileTemplateMutation) {
+	m.SetName(i.Name)
+	if v := i.Description; v != nil {
+		m.SetDescription(*v)
+	}
+	m.SetProjectID(i.ProjectID)
+}
+
+// SetInput applies the change-set in the CreateAPIKeyProfileTemplateInput on the APIKeyProfileTemplateCreate builder.
+func (c *APIKeyProfileTemplateCreate) SetInput(i CreateAPIKeyProfileTemplateInput) *APIKeyProfileTemplateCreate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// UpdateAPIKeyProfileTemplateInput represents a mutation input for updating apikeyprofiletemplates.
+type UpdateAPIKeyProfileTemplateInput struct {
+	Name        *string
+	Description *string
+}
+
+// Mutate applies the UpdateAPIKeyProfileTemplateInput on the APIKeyProfileTemplateMutation builder.
+func (i *UpdateAPIKeyProfileTemplateInput) Mutate(m *APIKeyProfileTemplateMutation) {
+	if v := i.Name; v != nil {
+		m.SetName(*v)
+	}
+	if v := i.Description; v != nil {
+		m.SetDescription(*v)
+	}
+}
+
+// SetInput applies the change-set in the UpdateAPIKeyProfileTemplateInput on the APIKeyProfileTemplateUpdate builder.
+func (c *APIKeyProfileTemplateUpdate) SetInput(i UpdateAPIKeyProfileTemplateInput) *APIKeyProfileTemplateUpdate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// SetInput applies the change-set in the UpdateAPIKeyProfileTemplateInput on the APIKeyProfileTemplateUpdateOne builder.
+func (c *APIKeyProfileTemplateUpdateOne) SetInput(i UpdateAPIKeyProfileTemplateInput) *APIKeyProfileTemplateUpdateOne {
+	i.Mutate(c.Mutation())
+	return c
+}
+
 // CreateChannelInput represents a mutation input for creating channels.
 type CreateChannelInput struct {
 	Type                    channel.Type
@@ -97,6 +147,7 @@ type CreateChannelInput struct {
 	Settings                *objects.ChannelSettings
 	OrderingWeight          *int
 	Remark                  *string
+	Endpoints               []objects.ChannelEndpoint
 }
 
 // Mutate applies the CreateChannelInput on the ChannelMutation builder.
@@ -135,6 +186,9 @@ func (i *CreateChannelInput) Mutate(m *ChannelMutation) {
 	if v := i.Remark; v != nil {
 		m.SetRemark(*v)
 	}
+	if v := i.Endpoints; v != nil {
+		m.SetEndpoints(v)
+	}
 }
 
 // SetInput applies the change-set in the CreateChannelInput on the ChannelCreate builder.
@@ -172,6 +226,9 @@ type UpdateChannelInput struct {
 	ErrorMessage              *string
 	ClearRemark               bool
 	Remark                    *string
+	ClearEndpoints            bool
+	Endpoints                 []objects.ChannelEndpoint
+	AppendEndpoints           []objects.ChannelEndpoint
 }
 
 // Mutate applies the UpdateChannelInput on the ChannelMutation builder.
@@ -256,6 +313,15 @@ func (i *UpdateChannelInput) Mutate(m *ChannelMutation) {
 	}
 	if v := i.Remark; v != nil {
 		m.SetRemark(*v)
+	}
+	if i.ClearEndpoints {
+		m.ClearEndpoints()
+	}
+	if v := i.Endpoints; v != nil {
+		m.SetEndpoints(v)
+	}
+	if i.AppendEndpoints != nil {
+		m.AppendEndpoints(i.Endpoints)
 	}
 }
 
@@ -523,6 +589,88 @@ func (c *ModelUpdateOne) SetInput(i UpdateModelInput) *ModelUpdateOne {
 	return c
 }
 
+// CreateOIDCIdentityInput represents a mutation input for creating oidcidentities.
+type CreateOIDCIdentityInput struct {
+	Issuer      string
+	Subject     string
+	Email       *string
+	IdpName     *string
+	LastLoginAt *time.Time
+}
+
+// Mutate applies the CreateOIDCIdentityInput on the OIDCIdentityMutation builder.
+func (i *CreateOIDCIdentityInput) Mutate(m *OIDCIdentityMutation) {
+	m.SetIssuer(i.Issuer)
+	m.SetSubject(i.Subject)
+	if v := i.Email; v != nil {
+		m.SetEmail(*v)
+	}
+	if v := i.IdpName; v != nil {
+		m.SetIdpName(*v)
+	}
+	if v := i.LastLoginAt; v != nil {
+		m.SetLastLoginAt(*v)
+	}
+}
+
+// SetInput applies the change-set in the CreateOIDCIdentityInput on the OIDCIdentityCreate builder.
+func (c *OIDCIdentityCreate) SetInput(i CreateOIDCIdentityInput) *OIDCIdentityCreate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// UpdateOIDCIdentityInput represents a mutation input for updating oidcidentities.
+type UpdateOIDCIdentityInput struct {
+	Issuer           *string
+	Subject          *string
+	ClearEmail       bool
+	Email            *string
+	ClearIdpName     bool
+	IdpName          *string
+	ClearLastLoginAt bool
+	LastLoginAt      *time.Time
+}
+
+// Mutate applies the UpdateOIDCIdentityInput on the OIDCIdentityMutation builder.
+func (i *UpdateOIDCIdentityInput) Mutate(m *OIDCIdentityMutation) {
+	if v := i.Issuer; v != nil {
+		m.SetIssuer(*v)
+	}
+	if v := i.Subject; v != nil {
+		m.SetSubject(*v)
+	}
+	if i.ClearEmail {
+		m.ClearEmail()
+	}
+	if v := i.Email; v != nil {
+		m.SetEmail(*v)
+	}
+	if i.ClearIdpName {
+		m.ClearIdpName()
+	}
+	if v := i.IdpName; v != nil {
+		m.SetIdpName(*v)
+	}
+	if i.ClearLastLoginAt {
+		m.ClearLastLoginAt()
+	}
+	if v := i.LastLoginAt; v != nil {
+		m.SetLastLoginAt(*v)
+	}
+}
+
+// SetInput applies the change-set in the UpdateOIDCIdentityInput on the OIDCIdentityUpdate builder.
+func (c *OIDCIdentityUpdate) SetInput(i UpdateOIDCIdentityInput) *OIDCIdentityUpdate {
+	i.Mutate(c.Mutation())
+	return c
+}
+
+// SetInput applies the change-set in the UpdateOIDCIdentityInput on the OIDCIdentityUpdateOne builder.
+func (c *OIDCIdentityUpdateOne) SetInput(i UpdateOIDCIdentityInput) *OIDCIdentityUpdateOne {
+	i.Mutate(c.Mutation())
+	return c
+}
+
 // CreateProjectInput represents a mutation input for creating projects.
 type CreateProjectInput struct {
 	Name        string
@@ -763,6 +911,7 @@ func (c *PromptProtectionRuleUpdateOne) SetInput(i UpdatePromptProtectionRuleInp
 type CreateRequestInput struct {
 	Source                     *request.Source
 	ModelID                    string
+	ReasoningEffort            *string
 	Format                     *string
 	RequestHeaders             objects.JSONRawMessage
 	RequestBody                objects.JSONRawMessage
@@ -792,6 +941,9 @@ func (i *CreateRequestInput) Mutate(m *RequestMutation) {
 		m.SetSource(*v)
 	}
 	m.SetModelID(i.ModelID)
+	if v := i.ReasoningEffort; v != nil {
+		m.SetReasoningEffort(*v)
+	}
 	if v := i.Format; v != nil {
 		m.SetFormat(*v)
 	}

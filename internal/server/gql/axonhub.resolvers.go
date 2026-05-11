@@ -24,6 +24,20 @@ import (
 	"github.com/samber/lo"
 )
 
+// DefaultEndpoints is the resolver for the defaultEndpoints field.
+func (r *channelResolver) DefaultEndpoints(ctx context.Context, obj *ent.Channel) ([]*objects.ChannelEndpoint, error) {
+	if obj == nil {
+		return []*objects.ChannelEndpoint{}, nil
+	}
+
+	endpoints := biz.DefaultEndpointsForChannelType(obj.Type)
+	if len(endpoints) == 0 {
+		return []*objects.ChannelEndpoint{}, nil
+	}
+
+	return lo.ToSlicePtr(endpoints), nil
+}
+
 // AllModelEntries is the resolver for the allModelEntries field.
 func (r *channelResolver) AllModelEntries(ctx context.Context, obj *ent.Channel) ([]*biz.ChannelModelEntry, error) {
 	ch := biz.Channel{Channel: obj}
@@ -68,6 +82,38 @@ func (r *channelResolver) DisabledAPIKeys(ctx context.Context, obj *ent.Channel)
 	}
 
 	return lo.ToSlicePtr(obj.DisabledAPIKeys), nil
+}
+
+// LiveLimiterStats is the resolver for the liveLimiterStats field.
+func (r *channelResolver) LiveLimiterStats(ctx context.Context, obj *ent.Channel) (*ChannelLimiterStats, error) {
+	if r.channelLimiterManager == nil || obj == nil {
+		return nil, nil
+	}
+
+	if obj.Settings == nil || obj.Settings.RateLimit == nil {
+		return nil, nil
+	}
+
+	rl := obj.Settings.RateLimit
+	if rl.MaxConcurrent == nil || *rl.MaxConcurrent <= 0 {
+		return nil, nil
+	}
+
+	queueSize := 0
+	if rl.QueueSize != nil && *rl.QueueSize > 0 {
+		queueSize = int(*rl.QueueSize)
+	}
+
+	// Stats returns ok=false until the first request creates the limiter; in
+	// that case in-flight / waiting are simply 0.
+	inFlight, waiting, _ := r.channelLimiterManager.Stats(obj.ID)
+
+	return &ChannelLimiterStats{
+		InFlight:  inFlight,
+		Waiting:   waiting,
+		Capacity:  int(*rl.MaxConcurrent),
+		QueueSize: queueSize,
+	}, nil
 }
 
 // HeaderOverrideOperations is the resolver for the headerOverrideOperations field.
@@ -119,6 +165,11 @@ func (r *mutationResolver) BulkCreateChannels(ctx context.Context, input biz.Bul
 // UpdateChannel is the resolver for the updateChannel field.
 func (r *mutationResolver) UpdateChannel(ctx context.Context, id objects.GUID, input ent.UpdateChannelInput) (*ent.Channel, error) {
 	return r.channelService.UpdateChannel(ctx, id.ID, &input)
+}
+
+// SaveChannelEndpoints is the resolver for the saveChannelEndpoints field.
+func (r *mutationResolver) SaveChannelEndpoints(ctx context.Context, input biz.SaveChannelEndpointsInput) (*ent.Channel, error) {
+	return r.channelService.SaveChannelEndpoints(ctx, input)
 }
 
 // UpdateChannelStatus is the resolver for the updateChannelStatus field.
@@ -569,6 +620,26 @@ func (r *mutationResolver) SyncChannelModels(ctx context.Context, channelID obje
 		ChannelID:       channelID,
 		SupportedModels: ch.SupportedModels,
 	}, nil
+}
+
+// CreateAPIKeyProfileTemplate is the resolver for the createApiKeyProfileTemplate field.
+func (r *mutationResolver) CreateAPIKeyProfileTemplate(ctx context.Context, input ent.CreateAPIKeyProfileTemplateInput, profile objects.APIKeyProfile) (*ent.APIKeyProfileTemplate, error) {
+	return r.apiKeyProfileTemplateService.CreateTemplate(ctx, input, &profile)
+}
+
+// UpdateAPIKeyProfileTemplate is the resolver for the updateApiKeyProfileTemplate field.
+func (r *mutationResolver) UpdateAPIKeyProfileTemplate(ctx context.Context, id objects.GUID, input ent.UpdateAPIKeyProfileTemplateInput, profile *objects.APIKeyProfile) (*ent.APIKeyProfileTemplate, error) {
+	return r.apiKeyProfileTemplateService.UpdateTemplate(ctx, id.ID, input, profile)
+}
+
+// DeleteAPIKeyProfileTemplate is the resolver for the deleteApiKeyProfileTemplate field.
+func (r *mutationResolver) DeleteAPIKeyProfileTemplate(ctx context.Context, id objects.GUID) (*ent.APIKeyProfileTemplate, error) {
+	return r.apiKeyProfileTemplateService.DeleteTemplate(ctx, id.ID)
+}
+
+// LoadAPIKeyProfileTemplate is the resolver for the loadApiKeyProfileTemplate field.
+func (r *mutationResolver) LoadAPIKeyProfileTemplate(ctx context.Context, input LoadAPIKeyProfileTemplateInput) (*ent.APIKey, error) {
+	return r.apiKeyProfileTemplateService.LoadTemplate(ctx, input.TemplateID.ID, input.APIKeyID.ID)
 }
 
 // AllChannelSummarys is the resolver for the allChannelSummarys field.

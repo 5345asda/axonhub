@@ -471,13 +471,14 @@ interface QueryModelsArgs {
   before?: string;
   where?: Record<string, any>;
   orderBy?: {
-    field: 'CREATED_AT' | 'UPDATED_AT' | 'NAME' | 'MODEL_ID';
+    field: 'CREATED_AT' | 'UPDATED_AT' | 'NAME';
     direction: 'ASC' | 'DESC';
   };
 }
 
-export function useQueryModels(args: QueryModelsArgs) {
+export function useQueryModels(args: QueryModelsArgs, options?: { enabled?: boolean }) {
   return useQuery({
+    enabled: options?.enabled ?? true,
     queryKey: ['models', args],
     queryFn: async () => {
       const data = await graphqlRequest<{ models: ModelConnection }>(MODELS_QUERY, args);
@@ -578,6 +579,34 @@ export function useDeleteModel() {
     },
     onError: (error) => {
       handleError(error, { context: 'Delete Model' });
+    },
+  });
+}
+
+const UPDATE_MODEL_STATUS_MUTATION = `
+  mutation UpdateModelStatus($id: ID!, $status: ModelStatus!) {
+    updateModelStatus(id: $id, status: $status)
+  }
+`;
+
+export function useUpdateModelStatus() {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const { handleError } = useErrorHandler();
+
+  return useMutation({
+    mutationFn: async ({ id, status }: { id: string; status: 'enabled' | 'archived' }) => {
+      const data = await graphqlRequest<{ updateModelStatus: boolean }>(UPDATE_MODEL_STATUS_MUTATION, { id, status });
+      return data.updateModelStatus;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['models'] });
+      const statusKey = variables.status === 'archived' ? 'archiveSuccess' : 'restoreSuccess';
+      toast.success(t(`models.messages.${statusKey}`));
+    },
+    onError: (error, variables) => {
+      const contextKey = variables.status === 'archived' ? 'archiveTitle' : 'restoreTitle';
+      handleError(error, { context: t(`models.dialogs.status.${contextKey}`) });
     },
   });
 }

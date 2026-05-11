@@ -11,16 +11,14 @@ import (
 	"github.com/looplj/axonhub/llm/auth"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/streams"
-	"github.com/looplj/axonhub/llm/transformer/shared"
 )
 
 func TestOutboundStream_SignaturePassthroughModePreservesRawSignature(t *testing.T) {
 	transformer, err := NewOutboundTransformerWithConfig(&Config{
-		Type:            PlatformDirect,
-		BaseURL:         "https://api.anthropic.com",
-		APIKeyProvider:  auth.NewStaticKeyProvider("test-key"),
-		SignatureMode:   AnthropicSignatureModePassthrough,
-		AccountIdentity: "channel-1",
+		Type:           PlatformDirect,
+		BaseURL:        "https://api.anthropic.com",
+		APIKeyProvider: auth.NewStaticKeyProvider("test-key"),
+		SignatureMode:  AnthropicSignatureModePassthrough,
 	})
 	require.NoError(t, err)
 
@@ -33,15 +31,12 @@ func TestOutboundStream_SignaturePassthroughModePreservesRawSignature(t *testing
 	})
 	require.NoError(t, err)
 
-	ctx := shared.ContextWithTransportScope(t.Context(), shared.TransportScope{
-		BaseURL:         "https://api.anthropic.com/v1",
-		AccountIdentity: "channel-1",
-	})
+	ctx := t.Context()
 	stream := streams.SliceStream([]*httpclient.StreamEvent{
 		{Type: "content_block_delta", Data: rawEvent},
 	})
 
-	transformed, err := transformer.TransformStream(ctx, stream)
+	transformed, err := transformer.TransformStream(ctx, nil, stream)
 	require.NoError(t, err)
 	require.True(t, transformed.Next())
 
@@ -69,7 +64,7 @@ func TestConvertToLlmResponse_SignaturePassthroughModePreservesRawSignature(t *t
 		},
 	}
 
-	result := convertToLlmResponseWithConfig(resp, PlatformDirect, shared.TransportScope{}, &Config{
+	result := convertToLlmResponseWithConfig(resp, PlatformDirect, &Config{
 		SignatureMode: AnthropicSignatureModePassthrough,
 	}, t.Context())
 

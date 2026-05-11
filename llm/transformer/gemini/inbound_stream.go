@@ -61,6 +61,7 @@ func (s *geminiInboundStream) Next() bool {
 
 	for s.source.Next() {
 		chunk := s.source.Current()
+
 		event, err := s.transformChunk(chunk)
 		if err != nil {
 			s.err = err
@@ -72,6 +73,7 @@ func (s *geminiInboundStream) Next() bool {
 		}
 
 		s.current = event
+
 		return true
 	}
 
@@ -90,6 +92,7 @@ func (s *geminiInboundStream) Err() error {
 	if s.err != nil {
 		return s.err
 	}
+
 	return s.source.Err()
 }
 
@@ -97,6 +100,7 @@ func (s *geminiInboundStream) Close() error {
 	return s.source.Close()
 }
 
+//nolint:maintidx // Chunk transformation is inherently complex.
 func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.StreamEvent, error) {
 	if chunk == nil {
 		return nil, nil
@@ -126,6 +130,7 @@ func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.S
 			if chunk.TransformerMetadata == nil {
 				return nil
 			}
+
 			return maps.Clone(chunk.TransformerMetadata)
 		}(),
 		Choices: make([]llm.Choice, 0, len(chunk.Choices)),
@@ -142,12 +147,14 @@ func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.S
 				if choice.TransformerMetadata == nil {
 					return nil
 				}
+
 				return maps.Clone(choice.TransformerMetadata)
 			}(),
 		}
 
 		srcMsg := choice.Delta
 		targetIsDelta := true
+
 		if srcMsg == nil {
 			srcMsg = choice.Message
 			targetIsDelta = false
@@ -166,6 +173,7 @@ func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.S
 		if _, ok := s.pendingToolCallsByC[choiceIndex]; !ok {
 			s.pendingToolCallsByC[choiceIndex] = make(map[int]*toolCallAgg)
 		}
+
 		if s.pendingReasoningSignatureByC == nil {
 			s.pendingReasoningSignatureByC = make(map[int]*string)
 		}
@@ -183,6 +191,7 @@ func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.S
 		// Accumulate tool call deltas.
 		for _, tc := range srcMsg.ToolCalls {
 			idx := tc.Index
+
 			agg, ok := pendingByIndex[idx]
 			if !ok {
 				agg = &toolCallAgg{index: idx}
@@ -192,19 +201,24 @@ func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.S
 			if tc.ID != "" {
 				agg.id = tc.ID
 			}
+
 			if tc.Type != "" {
 				agg.typ = tc.Type
 			}
+
 			if tc.Function.Name != "" {
 				agg.name = tc.Function.Name
 			}
+
 			if tc.Function.Arguments != "" {
 				agg.arguments += tc.Function.Arguments
 			}
+
 			if tc.TransformerMetadata != nil {
 				if agg.transformerMetadata == nil {
 					agg.transformerMetadata = map[string]any{}
 				}
+
 				maps.Copy(agg.transformerMetadata, tc.TransformerMetadata)
 			}
 		}
@@ -221,6 +235,7 @@ func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.S
 		for idx := range pendingByIndex {
 			keys = append(keys, idx)
 		}
+
 		sort.Ints(keys)
 
 		for _, idx := range keys {
@@ -241,6 +256,7 @@ func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.S
 				if !flushAll {
 					continue
 				}
+
 				args = "{}"
 			}
 
@@ -300,6 +316,7 @@ func (s *geminiInboundStream) transformChunk(chunk *llm.Response) (*httpclient.S
 	}
 
 	geminiResp := convertLLMToGeminiResponse(out, true)
+
 	eventData, err := json.Marshal(geminiResp)
 	if err != nil {
 		return nil, err

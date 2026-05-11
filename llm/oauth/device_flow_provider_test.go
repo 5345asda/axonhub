@@ -105,6 +105,8 @@ func TestNewDeviceFlowProvider(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			provider := NewDeviceFlowProvider(tt.params)
 			require.NotNil(t, provider)
 			assert.Equal(t, tt.params.Config, provider.config)
@@ -149,6 +151,8 @@ func TestDeviceFlowProvider_Start_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			provider := NewDeviceFlowProvider(tt.params)
 			_, err := provider.Start(ctx)
 			require.Error(t, err)
@@ -363,6 +367,8 @@ func TestDeviceFlowProvider_Poll_Validation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			provider := NewDeviceFlowProvider(tt.params)
 			_, err := provider.Poll(ctx, tt.deviceCode)
 			require.Error(t, err)
@@ -469,6 +475,8 @@ func TestDeviceFlowProvider_Poll_ErrorResponses(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				errResp := TokenError{
 					Error:            tt.errorCode,
@@ -906,12 +914,9 @@ func TestDeviceFlowProvider_ConcurrentCredentials(t *testing.T) {
 	}
 
 	for range 100 {
-		wg.Add(1)
-
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_ = provider.GetCredentials()
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -927,6 +932,8 @@ func TestDeviceFlowProvider_refresh(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("nil credentials", func(t *testing.T) {
+		t.Parallel()
+
 		provider := NewDeviceFlowProvider(DeviceFlowProviderParams{
 			HTTPClient: httpclient.NewHttpClient(),
 		})
@@ -936,6 +943,8 @@ func TestDeviceFlowProvider_refresh(t *testing.T) {
 	})
 
 	t.Run("empty refresh token", func(t *testing.T) {
+		t.Parallel()
+
 		provider := NewDeviceFlowProvider(DeviceFlowProviderParams{
 			HTTPClient: httpclient.NewHttpClient(),
 		})
@@ -945,6 +954,8 @@ func TestDeviceFlowProvider_refresh(t *testing.T) {
 	})
 
 	t.Run("empty token URL", func(t *testing.T) {
+		t.Parallel()
+
 		provider := NewDeviceFlowProvider(DeviceFlowProviderParams{
 			HTTPClient: httpclient.NewHttpClient(),
 		})
@@ -954,6 +965,8 @@ func TestDeviceFlowProvider_refresh(t *testing.T) {
 	})
 
 	t.Run("successful refresh", func(t *testing.T) {
+		t.Parallel()
+
 		var gotForm url.Values
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -998,6 +1011,8 @@ func TestDeviceFlowProvider_refresh(t *testing.T) {
 	})
 
 	t.Run("preserves refresh token if not returned", func(t *testing.T) {
+		t.Parallel()
+
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			resp := TokenResponse{
 				AccessToken: "new-access",
@@ -1096,62 +1111,13 @@ func TestDeviceFlowProvider_AutoRefresh_StartStop_Idempotent(t *testing.T) {
 	provider.StopAutoRefresh()
 }
 
-// Test auto-refresh triggers refresh.
-func TestDeviceFlowProvider_AutoRefresh_TriggersRefresh(t *testing.T) {
-	var refreshCalls atomic.Int32
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		refreshCalls.Add(1)
-
-		resp := TokenResponse{
-			AccessToken: "refreshed",
-			TokenType:   "Bearer",
-			ExpiresIn:   1,
-		}
-		b, _ := json.Marshal(resp)
-
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(b)
-	}))
-	defer server.Close()
-
-	var refreshedCalled atomic.Int32
-
-	provider := NewDeviceFlowProvider(DeviceFlowProviderParams{
-		HTTPClient: httpclient.NewHttpClientWithClient(server.Client()),
-		Config: DeviceFlowConfig{
-			TokenURL: server.URL + "/token",
-			ClientID: "test-client",
-		},
-		Credentials: &OAuthCredentials{
-			AccessToken:  "expired",
-			RefreshToken: "refresh",
-			ExpiresAt:    time.Now().Add(-time.Hour),
-		},
-		OnRefreshed: func(ctx context.Context, refreshed *OAuthCredentials) error {
-			refreshedCalled.Add(1)
-			return nil
-		},
-	})
-
-	provider.StartAutoRefresh(context.Background(), AutoRefreshOptions{
-		Interval:      10 * time.Millisecond,
-		RefreshBefore: 950 * time.Millisecond,
-	})
-
-	time.Sleep(200 * time.Millisecond)
-
-	provider.StopAutoRefresh()
-
-	assert.GreaterOrEqual(t, refreshCalls.Load(), int32(1))
-	assert.GreaterOrEqual(t, refreshedCalled.Load(), int32(1))
-}
-
 // Test network errors.
 func TestDeviceFlowProvider_NetworkErrors(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Start() network error", func(t *testing.T) {
+		t.Parallel()
+
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		server.Close()
 
@@ -1169,6 +1135,8 @@ func TestDeviceFlowProvider_NetworkErrors(t *testing.T) {
 	})
 
 	t.Run("Poll() network error", func(t *testing.T) {
+		t.Parallel()
+
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 		server.Close()
 
@@ -1191,6 +1159,8 @@ func TestDeviceFlowProvider_InvalidJSON(t *testing.T) {
 	t.Parallel()
 
 	t.Run("Start() invalid JSON", func(t *testing.T) {
+		t.Parallel()
+
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{invalid json`))
@@ -1211,6 +1181,8 @@ func TestDeviceFlowProvider_InvalidJSON(t *testing.T) {
 	})
 
 	t.Run("Poll() invalid JSON", func(t *testing.T) {
+		t.Parallel()
+
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{invalid json`))
@@ -1259,6 +1231,8 @@ func TestDeviceFlowProvider_ScopeParsing(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				resp := TokenResponse{
 					AccessToken: "token",

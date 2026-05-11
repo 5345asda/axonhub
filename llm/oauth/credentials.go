@@ -31,6 +31,7 @@ func (t *TokenResponse) ExpiresAt() time.Time {
 	if t.ExpiresIn > 0 {
 		return time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
 	}
+
 	return time.Time{}
 }
 
@@ -76,7 +77,7 @@ func (c *OAuthCredentials) IsExpired(now time.Time) bool {
 }
 
 func (c *OAuthCredentials) ToJSON() (string, error) {
-	b, err := json.Marshal(c)
+	b, err := json.Marshal(c) //nolint:gosec
 	if err != nil {
 		return "", err
 	}

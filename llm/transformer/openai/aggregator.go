@@ -31,6 +31,7 @@ func (ca *choiceAggregator) addAnnotations(msg *Message) {
 	if msg == nil || len(msg.Annotations) == 0 {
 		return
 	}
+
 	for _, annotation := range msg.Annotations {
 		if annotation.URLCitation != nil && annotation.URLCitation.URL != "" {
 			ca.annotations[annotation.URLCitation.URL] = annotation.ToLLMAnnotation()
@@ -50,6 +51,8 @@ func DefaultTransformChunk(ctx context.Context, chunk *httpclient.StreamEvent) (
 }
 
 // AggregateStreamChunks aggregates OpenAI streaming response chunks into a complete response.
+//
+//nolint:maintidx // Stream aggregation is inherently complex.
 func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent, chunkTransformer ChunkTransformFunc) ([]byte, llm.ResponseMeta, error) {
 	if len(chunks) == 0 {
 		data, err := json.Marshal(&llm.Response{})
@@ -268,11 +271,13 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
 		for citation := range citationsMap {
 			citations = append(citations, citation)
 		}
+
 		sort.Strings(citations)
 
 		if response.TransformerMetadata == nil {
 			response.TransformerMetadata = make(map[string]any)
 		}
+
 		response.TransformerMetadata[TransformerMetadataKeyCitations] = citations
 	}
 

@@ -93,6 +93,18 @@ const (
 	// SystemKeyUserAgentPassThrough is the key used to store the user agent pass-through setting.
 	// When set to true, the system will pass through the original User-Agent header to upstream AI providers.
 	SystemKeyUserAgentPassThrough = "system_user_agent_pass_through"
+
+	// SystemKeyPassThrough is the key used to store the global body/response pass-through setting.
+	// When set to true, channels that do not explicitly disable pass-through will forward the original
+	// request body and the raw provider response/stream to the client without re-serialization, as long as
+	// the inbound and outbound API formats are identical.
+	//
+	//nolint:gosec // Not a secret.
+	SystemKeyPassThrough = "system_pass_through"
+
+	// SystemKeyQuotaEnforcementSettings is the key used to store the quota enforcement settings.
+	// The value is JSON-encoded QuotaEnforcementSettings struct.
+	SystemKeyQuotaEnforcementSettings = "quota_enforcement_settings"
 )
 
 // SystemGeneralSettings represents general system configuration settings.
@@ -113,6 +125,75 @@ type VideoStorageSettings struct {
 	ScanIntervalMinutes int `json:"scan_interval_minutes"`
 	// ScanLimit is the max number of requests processed per scan.
 	ScanLimit int `json:"scan_limit"`
+}
+
+// QuotaEnforcementMode defines how quota enforcement is applied.
+type QuotaEnforcementMode string
+
+const (
+	// QuotaEnforcementModeExhaustedOnly filters out channels with exhausted quota only.
+	QuotaEnforcementModeExhaustedOnly QuotaEnforcementMode = "exhausted_only"
+	// QuotaEnforcementModeDePrioritize deprioritizes exhausted channels and penalizes warning channels.
+	QuotaEnforcementModeDePrioritize QuotaEnforcementMode = "de_prioritize"
+)
+
+func (m QuotaEnforcementMode) MarshalGQL(w io.Writer) {
+	var s string
+
+	switch m {
+	case QuotaEnforcementModeExhaustedOnly:
+		s = "EXHAUSTED_ONLY"
+	case QuotaEnforcementModeDePrioritize:
+		s = "DE_PRIORITIZE"
+	default:
+		s = "EXHAUSTED_ONLY"
+	}
+
+	_, _ = io.WriteString(w, `"`+s+`"`)
+}
+
+func (m *QuotaEnforcementMode) UnmarshalGQL(v any) error {
+	str, ok := v.(string)
+	if !ok {
+		return fmt.Errorf("QuotaEnforcementMode must be a string")
+	}
+
+	switch str {
+	case "EXHAUSTED_ONLY":
+		*m = QuotaEnforcementModeExhaustedOnly
+	case "DE_PRIORITIZE":
+		*m = QuotaEnforcementModeDePrioritize
+	default:
+		return fmt.Errorf("invalid QuotaEnforcementMode: %s", str)
+	}
+
+	return nil
+}
+
+func (m *QuotaEnforcementMode) UnmarshalJSON(data []byte) error {
+	var raw string
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("invalid QuotaEnforcementMode: %w", err)
+	}
+
+	switch raw {
+	case "EXHAUSTED_ONLY", string(QuotaEnforcementModeExhaustedOnly):
+		*m = QuotaEnforcementModeExhaustedOnly
+	case "DE_PRIORITIZE", string(QuotaEnforcementModeDePrioritize):
+		*m = QuotaEnforcementModeDePrioritize
+	default:
+		return fmt.Errorf("invalid QuotaEnforcementMode: %q", raw)
+	}
+
+	return nil
+}
+
+// QuotaEnforcementSettings represents quota enforcement configuration.
+type QuotaEnforcementSettings struct {
+	// Enabled controls whether quota enforcement is active.
+	Enabled bool `json:"enabled"`
+	// Mode defines how quota is enforced.
+	Mode QuotaEnforcementMode `json:"mode"`
 }
 
 // BackupFrequency represents how often automatic backups should run.
@@ -219,13 +300,13 @@ type WebhookNotifierConfig struct {
 }
 
 type WebhookTarget struct {
-	Name      string                `json:"name"`
-	Enabled   bool                  `json:"enabled"`
-	URL       string                `json:"url"`
+	Name      string                  `json:"name"`
+	Enabled   bool                    `json:"enabled"`
+	URL       string                  `json:"url"`
 	Proxy     *httpclient.ProxyConfig `json:"proxy,omitempty"`
-	TimeoutMs int                   `json:"timeout_ms"`
-	Headers   []objects.HeaderEntry `json:"headers"`
-	Body      string                `json:"body"`
+	TimeoutMs int                     `json:"timeout_ms"`
+	Headers   []objects.HeaderEntry   `json:"headers"`
+	Body      string                  `json:"body"`
 }
 
 type WebhookSubscription struct {
@@ -253,6 +334,12 @@ type SystemModelSettings struct {
 	// When true, /v1/models behaves like /v1/models?include=all.
 	// When false, /v1/models returns only the basic compatibility fields by default.
 	DefaultModelAPIIncludeAll bool `json:"default_model_api_include_all"`
+
+	// AutoReasoningEffort controls whether model names with reasoning effort suffixes
+	// like "gpt-5.4-xhigh" are normalized to the base model and reasoning_effort.
+	// When true, the suffix is stripped from model and applied to request.reasoning_effort,
+	// overriding any reasoning_effort already set in the request.
+	AutoReasoningEffort bool `json:"auto_reasoning_effort"`
 }
 
 type SystemChannelSettings struct {
@@ -1241,6 +1328,86 @@ func (s *SystemService) SetUserAgentPassThrough(ctx context.Context, enabled boo
 	}
 
 	return s.setSystemValue(ctx, SystemKeyUserAgentPassThrough, strValue)
+}
+
+// PassThrough retrieves the global body/response pass-through setting.
+// When enabled, channels that do not explicitly override pass-through will forward the
+// original request body and the raw provider response/stream to the client without
+// re-serialization, as long as the inbound and outbound API formats are identical.
+func (s *SystemService) PassThrough(ctx context.Context) (bool, error) {
+	value, err := s.getSystemValue(ctx, SystemKeyPassThrough)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return false, nil
+		}
+
+		return false, fmt.Errorf("failed to get pass-through: %w", err)
+	}
+
+	return value == "true", nil
+}
+
+// SetPassThrough sets the global body/response pass-through setting.
+func (s *SystemService) SetPassThrough(ctx context.Context, enabled bool) error {
+	strValue := "false"
+	if enabled {
+		strValue = "true"
+	}
+
+	return s.setSystemValue(ctx, SystemKeyPassThrough, strValue)
+}
+
+// QuotaEnforcementSettings retrieves the quota enforcement settings.
+func (s *SystemService) QuotaEnforcementSettings(ctx context.Context) (*QuotaEnforcementSettings, error) {
+	value, err := s.getSystemValue(ctx, SystemKeyQuotaEnforcementSettings)
+	if err != nil {
+		if ent.IsNotFound(err) {
+			return lo.ToPtr(defaultQuotaEnforcementSettings), nil
+		}
+
+		return nil, fmt.Errorf("failed to get quota enforcement settings: %w", err)
+	}
+
+	var settings QuotaEnforcementSettings
+	if err := json.Unmarshal([]byte(value), &settings); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal quota enforcement settings: %w", err)
+	}
+
+	if settings.Mode == "" {
+		settings.Mode = defaultQuotaEnforcementSettings.Mode
+	}
+
+	return &settings, nil
+}
+
+// QuotaEnforcementSettingsOrDefault retrieves the quota enforcement settings or returns the default.
+func (s *SystemService) QuotaEnforcementSettingsOrDefault(ctx context.Context) *QuotaEnforcementSettings {
+	settings, err := s.QuotaEnforcementSettings(ctx)
+	if err != nil {
+		log.Warn(ctx, "failed to get quota enforcement settings", log.Cause(err))
+
+		return lo.ToPtr(defaultQuotaEnforcementSettings)
+	}
+
+	return settings
+}
+
+// SetQuotaEnforcementSettings sets the quota enforcement settings.
+func (s *SystemService) SetQuotaEnforcementSettings(ctx context.Context, settings QuotaEnforcementSettings) error {
+	if settings.Mode == "" {
+		settings.Mode = defaultQuotaEnforcementSettings.Mode
+	}
+
+	if settings.Mode != QuotaEnforcementModeExhaustedOnly && settings.Mode != QuotaEnforcementModeDePrioritize {
+		return fmt.Errorf("invalid quota enforcement mode: %q", settings.Mode)
+	}
+
+	jsonBytes, err := json.Marshal(settings)
+	if err != nil {
+		return fmt.Errorf("failed to marshal quota enforcement settings: %w", err)
+	}
+
+	return s.setSystemValue(ctx, SystemKeyQuotaEnforcementSettings, string(jsonBytes))
 }
 
 // UpdateAutoBackupLastRun updates the last backup timestamp and error status.

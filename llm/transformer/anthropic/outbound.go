@@ -16,7 +16,6 @@ import (
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/internal/pkg/xjson"
 	"github.com/looplj/axonhub/llm/transformer"
-	"github.com/looplj/axonhub/llm/transformer/shared"
 	"github.com/looplj/axonhub/llm/vertex"
 )
 
@@ -59,10 +58,13 @@ type Config struct {
 	// BaseURL is the base URL for the Anthropic API, required.
 	BaseURL string `json:"base_url,omitempty"`
 
-	AccountIdentity string `json:"account_identity,omitempty"`
-
 	// APIKeyProvider provides API keys for authentication, required.
 	APIKeyProvider auth.APIKeyProvider `json:"-"`
+
+	// EndpointPath is an optional custom path override for this endpoint.
+	// When set, it replaces the default API path (e.g., "/messages").
+	// Must start with "/". Skips default version normalization when set.
+	EndpointPath string `json:"endpoint_path,omitempty"`
 
 	// Thinking configuration
 	// Maps ReasoningEffort values to Anthropic thinking budget tokens
@@ -110,7 +112,11 @@ func NewOutboundTransformerWithConfig(config *Config) (transformer.Outbound, err
 	case PlatformVertex, PlatformBedrock:
 		config.BaseURL = transformer.NormalizeBaseURL(config.BaseURL, "")
 	default:
-		config.BaseURL = transformer.NormalizeBaseURL(config.BaseURL, "v1")
+		if config.EndpointPath != "" {
+			config.BaseURL = transformer.NormalizeBaseURL(config.BaseURL, "")
+		} else {
+			config.BaseURL = transformer.NormalizeBaseURL(config.BaseURL, "v1")
+		}
 	}
 
 	return t, nil
@@ -161,11 +167,7 @@ func (t *OutboundTransformer) TransformRequest(
 	}
 
 	// Convert to Anthropic request format
-	scope := shared.TransportScope{
-		BaseURL:         t.config.BaseURL,
-		AccountIdentity: t.config.AccountIdentity,
-	}
-	anthropicReq := convertToAnthropicRequestWithConfig(llmReq, t.config, scope)
+	anthropicReq := convertToAnthropicRequestWithConfig(llmReq, t.config)
 
 	// Anthropic supports two prompt-caching modes (see
 	// https://docs.claude.com/en/docs/build-with-claude/prompt-caching):
@@ -250,7 +252,7 @@ func (t *OutboundTransformer) TransformRequest(
 		Body:      body,
 		Auth:      authConfig,
 		APIFormat: string(llm.APIFormatAnthropicMessage),
-		Metadata:  scope.Metadata(),
+		Metadata:  nil,
 	}, nil
 }
 
@@ -293,6 +295,10 @@ func (t *OutboundTransformer) buildFullRequestURL(chatReq *llm.Request) (string,
 
 	default:
 		// BaseURL is already normalized with version in NewOutboundTransformerWithConfig
+		if t.config.EndpointPath != "" {
+			return t.config.BaseURL + t.config.EndpointPath, nil
+		}
+
 		return t.config.BaseURL + "/messages", nil
 	}
 }
@@ -324,15 +330,14 @@ func (t *OutboundTransformer) TransformResponse(
 	}
 
 	// Convert to ChatCompletionResponse
-	scope, _ := shared.GetTransportScope(ctx)
-	chatResp := convertToLlmResponseWithConfig(&anthropicResp, t.config.Type, scope, t.config, ctx)
+	chatResp := convertToLlmResponseWithConfig(&anthropicResp, t.config.Type, t.config, ctx)
 
 	return chatResp, nil
 }
 
 // AggregateStreamChunks aggregates Anthropic streaming response chunks into a complete response.
 func (t *OutboundTransformer) AggregateStreamChunks(
-	ctx context.Context,
+	ctx context.Context, _ *httpclient.Request,
 	chunks []*httpclient.StreamEvent,
 ) ([]byte, llm.ResponseMeta, error) {
 	return AggregateStreamChunks(ctx, chunks, t.config.Type)

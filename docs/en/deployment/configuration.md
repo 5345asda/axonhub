@@ -91,8 +91,12 @@ server:
 ```yaml
 db:
   dialect: "sqlite3"            # sqlite3, postgres, mysql, tidb
-  dsn: "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"  # Connection string
+  dsn: "file:axonhub.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)"  # Master connection string
   debug: false                  # Enable database debug logging
+  read_replica:
+    read_dsn: ""                # Read replica connection string (empty = no read-write separation)
+    read_max_open_conns: 0      # Max open connections for replica (0 = use default)
+    read_max_idle_conns: 0      # Max idle connections for replica (0 = use default)
 ```
 
 **Supported Databases:**
@@ -105,6 +109,28 @@ db:
 - `AXONHUB_DB_DIALECT`
 - `AXONHUB_DB_DSN`
 - `AXONHUB_DB_DEBUG`
+- `AXONHUB_DB_READ_REPLICA_READ_DSN`
+- `AXONHUB_DB_READ_REPLICA_READ_MAX_OPEN_CONNS`
+- `AXONHUB_DB_READ_REPLICA_READ_MAX_IDLE_CONNS`
+
+#### Read-Write Separation
+
+When `read_replica.read_dsn` is configured, AxonHub automatically routes queries based on SQL statement type:
+
+| Operation | Target | Examples |
+|-----------|--------|----------|
+| Read (SELECT/WITH etc.) | Replica | Queries, listings, aggregations |
+| Write (INSERT/UPDATE/DELETE etc.) | Master | Creates, updates, deletes |
+| Transactions (Tx) | Master | All transaction ops force master to avoid replication lag |
+
+**Example (PostgreSQL):**
+```yaml
+db:
+  dialect: "postgres"
+  dsn: "postgres://axonhub:password@master.db:5432/axonhub?sslmode=disable"
+  read_replica:
+    read_dsn: "postgres://axonhub:password@replica.db:5432/axonhub?sslmode=disable"
+```
 
 ### Cache Configuration
 
@@ -216,7 +242,8 @@ gc:
 
 ```yaml
 provider_quota:
-  check_interval: "20m"          # Interval for checking provider quota status
+  check_interval: "5m"           # Interval for checking provider quota status
+  warning_check_interval_ratio: 4 # Ratio for reduced warning-state check frequency
 ```
 
 **Description:**
@@ -224,26 +251,34 @@ This setting controls how frequently AxonHub polls provider API endpoints to che
 
 **Environment Variables:**
 - `AXONHUB_PROVIDER_QUOTA_CHECK_INTERVAL`
+- `AXONHUB_PROVIDER_QUOTA_WARNING_CHECK_INTERVAL_RATIO`
 
 **Supported Values:**
 - Minute intervals that divide evenly into 60: `1m`, `2m`, `3m`, `4m`, `5m`, `6m`, `10m`, `12m`, `15m`, `20m`, `30m`
 - Hourly intervals: `1h`, `2h`, `3h`, etc.
 
-**Default:** `20m`
+**Default:** `check_interval: 5m`, `warning_check_interval_ratio: 4`
+
+**Warning Check Interval Ratio:**
+- `warning_check_interval_ratio` — Ratio used to reduce the check frequency for channels in warning state. Warning channels are checked at `check_interval / ratio` instead of the full interval. Default: `4`
+- **Environment Variable:** `AXONHUB_PROVIDER_QUOTA_WARNING_CHECK_INTERVAL_RATIO`
+- **Example:** With `check_interval: 5m` and `warning_check_interval_ratio: 4`, warning channels are checked every 20 minutes instead of every 5 minutes
 
 **Recommendations:**
 - **Development:** Use shorter intervals (e.g., `5m`) to see quota updates quickly
-- **Production:** Use `20m` or longer to reduce API calls while maintaining reasonable data freshness
+- **Production:** Use `5m` (default) for timely quota detection; increase to `10m` or `20m` to reduce API calls
 - Unsupported intervals will be rounded to the nearest supported value with a warning log message
 
 **Examples:**
 ```yaml
 provider_quota:
   check_interval: "10m"          # Check every 10 minutes
+  warning_check_interval_ratio: 4 # Warning channels checked every 40 minutes
 ```
 
 ```bash
 export AXONHUB_PROVIDER_QUOTA_CHECK_INTERVAL="30m"
+export AXONHUB_PROVIDER_QUOTA_WARNING_CHECK_INTERVAL_RATIO=3
 ```
 
 ### GitHub Copilot OAuth Configuration

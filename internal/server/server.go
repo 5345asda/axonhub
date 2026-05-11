@@ -20,6 +20,7 @@ import (
 	"github.com/looplj/axonhub/internal/server/gql/openapi"
 	"github.com/looplj/axonhub/internal/server/middleware"
 	"github.com/looplj/axonhub/internal/server/orchestrator"
+	"github.com/looplj/axonhub/internal/server/scheduler"
 	"github.com/looplj/axonhub/internal/server/video_storage"
 	"github.com/looplj/axonhub/internal/tracing"
 )
@@ -90,11 +91,13 @@ func Run(opts ...fx.Option) {
 			fx.NopLogger,
 			fx.Provide(constructors...),
 			dependencies.Module,
+			scheduler.Module,
 			biz.Module,
 			orchestrator.Module,
 			backup.Module,
 			video_storage.Module,
 			api.Module,
+			fx.Provide(fx.Annotate(func(cfg Config) string { return cfg.PublicURL }, fx.ResultTags(`name:"public_url"`))),
 			fx.Invoke(func(cfg log.Config) {
 				log.SetGlobalConfig(cfg)
 				tracing.SetupLogger(log.GetGlobalLogger())
@@ -108,13 +111,10 @@ func Run(opts ...fx.Option) {
 					gql.SetTokenStatsCacheTTL(cfg.Dashboard.AllTimeTokenStatsSoftTTL, cfg.Dashboard.AllTimeTokenStatsHardTTL)
 				}
 			}),
-			fx.Invoke(func(lc fx.Lifecycle, worker *gc.Worker) {
+			fx.Invoke(func(lc fx.Lifecycle, worker *gc.Worker, s *scheduler.Scheduler) {
 				lc.Append(fx.Hook{
 					OnStart: func(ctx context.Context) error {
-						return worker.Start(ctx)
-					},
-					OnStop: func(ctx context.Context) error {
-						return worker.Stop(ctx)
+						return worker.RegisterScheduledTasks(ctx, s)
 					},
 				})
 			}),

@@ -13,7 +13,6 @@ import (
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/internal/pkg/xtest"
 	"github.com/looplj/axonhub/llm/streams"
-	"github.com/looplj/axonhub/llm/transformer/shared"
 )
 
 func TestOutboundTransformer_StreamTransformation_WithTestData(t *testing.T) {
@@ -47,12 +46,10 @@ func TestOutboundTransformer_StreamTransformation_WithTestData(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			baseURL := "https://example.com"
 			apiKey := string(tt.platformType)
-			accountIdentity := "channel-1"
 			transformer, err := NewOutboundTransformerWithConfig(&Config{
-				Type:            tt.platformType,
-				BaseURL:         baseURL,
-				AccountIdentity: accountIdentity,
-				APIKeyProvider:  auth.NewStaticKeyProvider(apiKey),
+				Type:           tt.platformType,
+				BaseURL:        baseURL,
+				APIKeyProvider: auth.NewStaticKeyProvider(apiKey),
 			})
 			require.NoError(t, err)
 
@@ -61,12 +58,8 @@ func TestOutboundTransformer_StreamTransformation_WithTestData(t *testing.T) {
 
 			mockStream := streams.SliceStream(streamEvents)
 
-			ot := transformer.(*OutboundTransformer)
-			ctx := shared.ContextWithTransportScope(t.Context(), shared.TransportScope{
-				BaseURL:         ot.config.BaseURL,
-				AccountIdentity: accountIdentity,
-			})
-			transformedStream, err := transformer.TransformStream(ctx, mockStream)
+			ctx := t.Context()
+			transformedStream, err := transformer.TransformStream(ctx, nil, mockStream)
 			require.NoError(t, err)
 
 			var actualResponses []*llm.Response
@@ -114,12 +107,10 @@ func TestOutboundTransformer_StreamTransformation_WithTestData(t *testing.T) {
 func TestOutboundTransformer_StreamTransformation_ErrorEvent(t *testing.T) {
 	baseURL := "https://example.com"
 	apiKey := string(PlatformDirect)
-	accountIdentity := "channel-1"
 	transformer, err := NewOutboundTransformerWithConfig(&Config{
-		Type:            PlatformDirect,
-		BaseURL:         baseURL,
-		AccountIdentity: accountIdentity,
-		APIKeyProvider:  auth.NewStaticKeyProvider(apiKey),
+		Type:           PlatformDirect,
+		BaseURL:        baseURL,
+		APIKeyProvider: auth.NewStaticKeyProvider(apiKey),
 	})
 	require.NoError(t, err)
 
@@ -128,12 +119,8 @@ func TestOutboundTransformer_StreamTransformation_ErrorEvent(t *testing.T) {
 
 	mockStream := streams.SliceStream(streamEvents)
 
-	ot := transformer.(*OutboundTransformer)
-	ctx := shared.ContextWithTransportScope(t.Context(), shared.TransportScope{
-		BaseURL:         ot.config.BaseURL,
-		AccountIdentity: accountIdentity,
-	})
-	transformedStream, err := transformer.TransformStream(ctx, mockStream)
+	ctx := t.Context()
+	transformedStream, err := transformer.TransformStream(ctx, nil, mockStream)
 	require.NoError(t, err)
 
 	_, err = streams.All(transformedStream)
@@ -148,6 +135,7 @@ func TestOutboundTransformer_StreamTransformation_UsesFinalPromptTokensWhenPrese
 		APIKeyProvider: auth.NewStaticKeyProvider("test-key"),
 	})
 	require.NoError(t, err)
+
 	stopReason := "end_turn"
 
 	messageStartData, err := json.Marshal(StreamEvent{
@@ -189,11 +177,8 @@ func TestOutboundTransformer_StreamTransformation_UsesFinalPromptTokensWhenPrese
 	}
 
 	mockStream := streams.SliceStream(streamEvents)
-	ot := transformer.(*OutboundTransformer)
-	ctx := shared.ContextWithTransportScope(t.Context(), shared.TransportScope{
-		BaseURL: ot.config.BaseURL,
-	})
-	transformedStream, err := transformer.TransformStream(ctx, mockStream)
+	ctx := t.Context()
+	transformedStream, err := transformer.TransformStream(ctx, nil, mockStream)
 	require.NoError(t, err)
 
 	var actualResponses []*llm.Response

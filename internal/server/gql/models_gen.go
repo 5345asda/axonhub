@@ -110,6 +110,18 @@ type BulkUpdateChannelOrderingResult struct {
 	Channels []*ent.Channel `json:"channels"`
 }
 
+// ChannelLimiterStats is a point-in-time snapshot of the per-channel concurrency limiter.
+type ChannelLimiterStats struct {
+	// Number of requests currently holding a capacity slot.
+	InFlight int `json:"inFlight"`
+	// Number of requests currently waiting in the FIFO queue.
+	Waiting int `json:"waiting"`
+	// Configured MaxConcurrent (capacity ceiling).
+	Capacity int `json:"capacity"`
+	// Configured QueueSize (0 means soft mode — no waiting queue, only counts).
+	QueueSize int `json:"queueSize"`
+}
+
 // Performance statistics for a specific channel on a given date
 type ChannelPerformanceStat struct {
 	Date         string   `json:"date"`
@@ -267,6 +279,11 @@ type InitializeSystemPayload struct {
 	Token   *string   `json:"token,omitempty"`
 }
 
+type LoadAPIKeyProfileTemplateInput struct {
+	TemplateID objects.GUID `json:"templateID"`
+	APIKeyID   objects.GUID `json:"apiKeyID"`
+}
+
 // Performance statistics for a specific model on a given date
 type ModelPerformanceStat struct {
 	Date         string   `json:"date"`
@@ -284,11 +301,34 @@ type ModelTokenUsageStats struct {
 	ReasoningTokens int    `json:"reasoningTokens"`
 }
 
+type OIDCIdentityInfo struct {
+	ID      objects.GUID `json:"id"`
+	IdpName string       `json:"idpName"`
+	Issuer  string       `json:"issuer"`
+	Subject string       `json:"subject"`
+	Email   string       `json:"email"`
+}
+
 type OnboardingInfo struct {
 	Onboarded          bool                          `json:"onboarded"`
 	CompletedAt        *time.Time                    `json:"completedAt,omitempty"`
 	SystemModelSetting *SystemModelSettingOnboarding `json:"systemModelSetting,omitempty"`
 	AutoDisableChannel *AutoDisableChannelOnboarding `json:"autoDisableChannel,omitempty"`
+}
+
+type PassThroughSettings struct {
+	Enabled bool `json:"enabled"`
+}
+
+type PromptProtectionRulePreviewInput struct {
+	Pattern  string                            `json:"pattern"`
+	TestText string                            `json:"testText"`
+	Settings *objects.PromptProtectionSettings `json:"settings"`
+}
+
+type PromptProtectionRulePreviewResult struct {
+	Result   string `json:"result"`
+	HasMatch bool   `json:"hasMatch"`
 }
 
 type QueryModelsInput struct {
@@ -418,12 +458,13 @@ type TokenStatsByAPIKey struct {
 
 // Token usage statistics grouped by channel
 type TokenStatsByChannel struct {
-	ChannelName     string `json:"channelName"`
-	InputTokens     int    `json:"inputTokens"`
-	OutputTokens    int    `json:"outputTokens"`
-	CachedTokens    int    `json:"cachedTokens"`
-	ReasoningTokens int    `json:"reasoningTokens"`
-	TotalTokens     int    `json:"totalTokens"`
+	ChannelID       objects.GUID `json:"channelId"`
+	ChannelName     string       `json:"channelName"`
+	InputTokens     int          `json:"inputTokens"`
+	OutputTokens    int          `json:"outputTokens"`
+	CachedTokens    int          `json:"cachedTokens"`
+	ReasoningTokens int          `json:"reasoningTokens"`
+	TotalTokens     int          `json:"totalTokens"`
 }
 
 // Token usage statistics grouped by model
@@ -479,6 +520,15 @@ type UpdateMeInput struct {
 	Avatar         *string `json:"avatar,omitempty"`
 }
 
+type UpdateMyPasswordInput struct {
+	OldPassword *string `json:"oldPassword,omitempty"`
+	NewPassword string  `json:"newPassword"`
+}
+
+type UpdatePassThroughSettingsInput struct {
+	Enabled bool `json:"enabled"`
+}
+
 type UpdateProjectUserInput struct {
 	ProjectID     objects.GUID    `json:"projectId"`
 	UserID        objects.GUID    `json:"userId"`
@@ -486,6 +536,11 @@ type UpdateProjectUserInput struct {
 	Scopes        []string        `json:"scopes,omitempty"`
 	AddRoleIDs    []*objects.GUID `json:"addRoleIDs,omitempty"`
 	RemoveRoleIDs []*objects.GUID `json:"removeRoleIDs,omitempty"`
+}
+
+type UpdateQuotaEnforcementSettingsInput struct {
+	Enabled *bool                     `json:"enabled,omitempty"`
+	Mode    *biz.QuotaEnforcementMode `json:"mode,omitempty"`
 }
 
 type UpdateUserAgentPassThroughSettingsInput struct {

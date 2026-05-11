@@ -212,11 +212,13 @@ func (t *Transformer) TransformRequest(ctx context.Context, llmReq *llm.Request)
 
 	// Auth - OAuth only, no API key fallback
 	var authConfig *httpclient.AuthConfig
+
 	if t.tokenProvider != nil {
 		creds, err := t.tokenProvider.Get(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to get OAuth token: %w", err)
 		}
+
 		authConfig = &httpclient.AuthConfig{
 			Type:   httpclient.AuthTypeBearer,
 			APIKey: creds.AccessToken,
@@ -275,6 +277,7 @@ func (t *Transformer) patchGeminiRequest(ctx context.Context, req *gemini.Genera
 
 	// Sanitize tool schemas and convert to Antigravity format
 	hasTools := false
+
 	for _, tool := range req.Tools {
 		for _, fd := range tool.FunctionDeclarations {
 			hasTools = true
@@ -317,9 +320,11 @@ func (t *Transformer) patchGeminiRequest(ctx context.Context, req *gemini.Genera
 		if req.ToolConfig == nil {
 			req.ToolConfig = &gemini.ToolConfig{}
 		}
+
 		if req.ToolConfig.FunctionCallingConfig == nil {
 			req.ToolConfig.FunctionCallingConfig = &gemini.FunctionCallingConfig{}
 		}
+
 		req.ToolConfig.FunctionCallingConfig.Mode = "VALIDATED"
 
 		// C. Tool Hardening Instruction
@@ -382,13 +387,16 @@ func (t *Transformer) patchGeminiRequest(ctx context.Context, req *gemini.Genera
 		for _, content := range req.Contents {
 			// Filter parts
 			var newParts []*gemini.Part
+
 			for _, part := range content.Parts {
 				// Strip thinking parts
 				if part.Thought {
 					continue
 				}
+
 				newParts = append(newParts, part)
 			}
+
 			content.Parts = newParts
 		}
 	}
@@ -401,6 +409,7 @@ func (t *Transformer) buildURL(llmReq *llm.Request) string {
 	if llmReq.Stream != nil && *llmReq.Stream {
 		action = "streamGenerateContent?alt=sse"
 	}
+
 	return fmt.Sprintf("%s/v1internal:%s", strings.TrimSuffix(t.config.BaseURL, "/"), action)
 }
 
@@ -466,7 +475,7 @@ func (t *Transformer) SetBaseURL(baseURL string) {
 }
 
 // AggregateStreamChunks implements transformer.Outbound.
-func (t *Transformer) AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {
+func (t *Transformer) AggregateStreamChunks(ctx context.Context, req *httpclient.Request, chunks []*httpclient.StreamEvent) ([]byte, llm.ResponseMeta, error) {
 	// We need to unwrap the chunks before delegating to Gemini transformer.
 	// Since we shouldn't modify the input chunks in place (they might be used elsewhere),
 	// we create a new slice of chunks with modified data.
@@ -498,11 +507,11 @@ func (t *Transformer) AggregateStreamChunks(ctx context.Context, chunks []*httpc
 		}
 	}
 
-	return t.geminiTransformer.AggregateStreamChunks(ctx, unwrappedChunks)
+	return t.geminiTransformer.AggregateStreamChunks(ctx, req, unwrappedChunks)
 }
 
 // TransformStream implements transformer.Outbound.
-func (t *Transformer) TransformStream(ctx context.Context, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
+func (t *Transformer) TransformStream(ctx context.Context, req *httpclient.Request, stream streams.Stream[*httpclient.StreamEvent]) (streams.Stream[*llm.Response], error) {
 	// We need to intercept the stream events to unwrap the "response" envelope
 	// before Gemini transformer processes them.
 
@@ -532,7 +541,7 @@ func (t *Transformer) TransformStream(ctx context.Context, stream streams.Stream
 		return event
 	})
 
-	return t.geminiTransformer.TransformStream(ctx, unwrappedStream)
+	return t.geminiTransformer.TransformStream(ctx, req, unwrappedStream)
 }
 
 // CustomizeExecutor implements pipeline.ChannelCustomizedExecutor.

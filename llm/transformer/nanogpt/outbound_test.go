@@ -44,6 +44,7 @@ func TestNewOutboundTransformerWithConfig(t *testing.T) {
 				require.Error(t, err)
 				return
 			}
+
 			require.NoError(t, err)
 			require.NotNil(t, transformer)
 			assert.IsType(t, &OutboundTransformer{}, transformer)
@@ -266,7 +267,9 @@ func TestOutboundTransformer_TransformResponse(t *testing.T) {
 				assert.Error(t, err)
 				return
 			}
+
 			assert.NoError(t, err)
+
 			if tt.validateResp != nil {
 				tt.validateResp(t, resp)
 			}
@@ -286,7 +289,7 @@ func TestOutboundTransformer_AggregateStreamChunks(t *testing.T) {
 		{Data: []byte(`{"id":"test","choices":[{"index":0,"delta":{"content":" World"}}]}`)},
 	}
 
-	data, meta, err := transformer.AggregateStreamChunks(context.Background(), chunks)
+	data, meta, err := transformer.AggregateStreamChunks(context.Background(), nil, chunks)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "Hello")
 	assert.Contains(t, string(data), "World")

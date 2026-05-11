@@ -8,13 +8,14 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/samber/lo"
+
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/oauth"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer"
 	"github.com/looplj/axonhub/llm/transformer/anthropic"
-	"github.com/samber/lo"
 )
 
 const (
@@ -49,7 +50,7 @@ type Params struct {
 	TokenProvider   oauth.TokenGetter // OAuth token provider (required)
 	BaseURL         string            // Base URL for the Anthropic API (optional)
 	IsOfficial      bool              // Whether the channel uses official OAuth credentials
-	AccountIdentity string
+	AccountIdentity string            // Stable channel identity for deterministic user_id (optional)
 }
 
 // NewOutboundTransformer creates a new ClaudeCodeTransformer with OAuth authentication.
@@ -65,9 +66,8 @@ func NewOutboundTransformer(params Params) (*ClaudeCodeTransformer, error) {
 
 	// Create base transformer with minimal config
 	outbound, err := anthropic.NewOutboundTransformerWithConfig(&anthropic.Config{
-		Type:            anthropic.PlatformClaudeCode,
-		BaseURL:         baseURL,
-		AccountIdentity: params.AccountIdentity,
+		Type:    anthropic.PlatformClaudeCode,
+		BaseURL: baseURL,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create outbound transformer: %w", err)
@@ -85,6 +85,7 @@ func NewOutboundTransformer(params Params) (*ClaudeCodeTransformer, error) {
 // It wraps an OutboundTransformer and adds Claude Code specific headers and system message.
 type ClaudeCodeTransformer struct {
 	transformer.Outbound
+
 	tokens          oauth.TokenGetter
 	isOfficial      bool
 	accountIdentity string
@@ -101,6 +102,7 @@ func (t *ClaudeCodeTransformer) TransformRequest(
 
 	rawUA := ""
 	keepClientUA := false
+
 	var rawHeaders http.Header
 
 	if llmReq.RawRequest != nil && llmReq.RawRequest.Headers != nil {
@@ -121,14 +123,17 @@ func (t *ClaudeCodeTransformer) TransformRequest(
 	if err != nil {
 		return nil, fmt.Errorf("failed to get oauth token: %w", err)
 	}
+
 	apiKey := creds.AccessToken
 
 	// Apply structured transformations before serialization
 	reqCopy = *disableThinkingIfToolChoiceForcedStructured(&reqCopy)
+
 	reqCopy = *injectClaudeCodeSystemMessageStructured(&reqCopy)
 	if t.isOfficial {
 		reqCopy = *ensureBillingSystemMessageCCH(&reqCopy)
 	}
+
 	reqCopy = injectFakeUserIDStructured(ctx, reqCopy, t.accountIdentity)
 	if t.isOfficial && !keepClientUA {
 		reqCopy = *applyClaudeToolPrefixStructured(&reqCopy, toolPrefix)
@@ -229,10 +234,11 @@ func (t *ClaudeCodeTransformer) TransformResponse(
 // TransformStream overrides the base TransformStream to strip tool prefixes from streaming responses.
 func (t *ClaudeCodeTransformer) TransformStream(
 	ctx context.Context,
+	req *httpclient.Request,
 	stream streams.Stream[*httpclient.StreamEvent],
 ) (streams.Stream[*llm.Response], error) {
 	// Call the base transformer to get the response stream
-	baseStream, err := t.Outbound.TransformStream(ctx, stream)
+	baseStream, err := t.Outbound.TransformStream(ctx, req, stream)
 	if err != nil {
 		return nil, err
 	}
@@ -280,6 +286,7 @@ func (s *toolPrefixStripperStream) Next() bool {
 	}
 
 	s.current = resp
+
 	return true
 }
 
@@ -297,7 +304,7 @@ func (s *toolPrefixStripperStream) Close() error {
 
 // AggregateStreamChunks overrides the base AggregateStreamChunks to strip tool prefixes from stream chunks.
 func (t *ClaudeCodeTransformer) AggregateStreamChunks(
-	ctx context.Context,
+	ctx context.Context, req *httpclient.Request,
 	chunks []*httpclient.StreamEvent,
 ) ([]byte, llm.ResponseMeta, error) {
 	// Note: We can't access request metadata here, so we blindly strip proxy_ prefix
@@ -314,7 +321,7 @@ func (t *ClaudeCodeTransformer) AggregateStreamChunks(
 	}
 
 	// Call the base transformer
-	return t.Outbound.AggregateStreamChunks(ctx, chunks)
+	return t.Outbound.AggregateStreamChunks(ctx, req, chunks)
 }
 
 // stripClaudeToolPrefixFromStreamLine removes the prefix from tool names in streaming events.
