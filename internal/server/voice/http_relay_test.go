@@ -184,10 +184,11 @@ func TestNativeHTTPRelayPreservesCompressedNonMiniMaxResponse(t *testing.T) {
 	require.Equal(t, rawResponse, w.Body.Bytes())
 }
 
-func TestNativeHTTPRelayDoesNotExposeNonRetryableUpstreamError(t *testing.T) {
+func TestNativeHTTPRelayForwardsNonRetryableUpstreamError(t *testing.T) {
 	var firstCalls, secondCalls atomic.Int32
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusUnauthorized)
 		_, _ = w.Write([]byte(`{"error":"provider-secret"}`))
 	}))
@@ -206,10 +207,115 @@ func TestNativeHTTPRelayDoesNotExposeNonRetryableUpstreamError(t *testing.T) {
 			nativeHTTPTestTarget(t, second.URL, objects.NativeVoiceAPIFormatDoubaoTTS),
 		})
 
-	require.ErrorIs(t, err, errNativeRelayUpstream)
-	require.Empty(t, w.Body.Bytes())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Equal(t, `{"error":"provider-secret"}`, w.Body.String())
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
 	require.Equal(t, int32(1), firstCalls.Load())
 	require.Equal(t, int32(0), secondCalls.Load())
+}
+
+func TestNativeHTTPRelayRetriesRetryableUpstreamResponseBeforeCommit(t *testing.T) {
+	var firstCalls, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"temporarily unavailable"}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer second.Close()
+
+	w := httptest.NewRecorder()
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/api/v3/tts/unidirectional", strings.NewReader(`{"text":"hello"}`)),
+		[]NativeRelayTarget{
+			nativeHTTPTestTarget(t, first.URL, objects.NativeVoiceAPIFormatDoubaoTTS),
+			nativeHTTPTestTarget(t, second.URL, objects.NativeVoiceAPIFormatDoubaoTTS),
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, `{"ok":true}`, w.Body.String())
+	require.Equal(t, int32(1), firstCalls.Load())
+	require.Equal(t, int32(1), secondCalls.Load())
+}
+
+func TestNativeHTTPRelayForwardsFinalRetryableUpstreamError(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"temporarily unavailable"}`))
+	}))
+	defer upstream.Close()
+
+	w := httptest.NewRecorder()
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/api/v3/tts/unidirectional", strings.NewReader(`{"text":"hello"}`)),
+		[]NativeRelayTarget{nativeHTTPTestTarget(t, upstream.URL, objects.NativeVoiceAPIFormatDoubaoTTS)})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Equal(t, `{"error":"temporarily unavailable"}`, w.Body.String())
+	require.Equal(t, "application/json", w.Header().Get("Content-Type"))
+}
+
+func TestNativeHTTPRelayForwardsLastRetryableResponseAfterLaterTransportFailure(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Upstream-Error", "preserve-me")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"temporarily unavailable"}`))
+	}))
+	defer first.Close()
+
+	second := nativeHTTPTestTarget(t, "http://second.test", objects.NativeVoiceAPIFormatDoubaoTTS)
+	second.Channel.HTTPClient = httpclient.NewHttpClientWithClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("second target transport failure")
+	})})
+
+	w := httptest.NewRecorder()
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/api/v3/tts/unidirectional", strings.NewReader(`{"text":"hello"}`)),
+		[]NativeRelayTarget{
+			nativeHTTPTestTarget(t, first.URL, objects.NativeVoiceAPIFormatDoubaoTTS),
+			second,
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusServiceUnavailable, w.Code)
+	require.Equal(t, `{"error":"temporarily unavailable"}`, w.Body.String())
+	require.Equal(t, "preserve-me", w.Header().Get("X-Upstream-Error"))
+}
+
+func TestNativeHTTPRelayForwardsLastBusinessResponseAfterLaterTransportFailure(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":2013,"status_msg":"invalid params"}}`))
+	}))
+	defer first.Close()
+
+	second := nativeHTTPTestTarget(t, "http://second.test", objects.NativeVoiceAPIFormatMiniMaxT2A)
+	second.Channel.HTTPClient = httpclient.NewHttpClientWithClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("second target transport failure")
+	})})
+
+	w := httptest.NewRecorder()
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd"}`)),
+		[]NativeRelayTarget{
+			nativeHTTPTestTarget(t, first.URL, objects.NativeVoiceAPIFormatMiniMaxT2A),
+			second,
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.JSONEq(t, `{"base_resp":{"status_code":2013,"status_msg":"invalid params"}}`, w.Body.String())
 }
 
 func TestNativeHTTPRelayRejectsRedirectBeforeProviderCredentialsCanLeak(t *testing.T) {
@@ -248,20 +354,21 @@ func TestNativeHTTPRelayRejectsRedirectBeforeProviderCredentialsCanLeak(t *testi
 	require.Equal(t, `{"ok":true}`, w.Body.String())
 }
 
-func TestNativeHTTPRelayDoesNotExposeBusinessQueryInUpstreamError(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-	}))
-	defer upstream.Close()
+func TestNativeHTTPRelayKeepsTransportFailureOpaque(t *testing.T) {
+	target := nativeHTTPTestTarget(t, "http://upstream.test", objects.NativeVoiceAPIFormatMiniMaxT2A)
+	target.Channel.HTTPClient = httpclient.NewHttpClientWithClient(&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("failed to reach https://provider.test/v1/t2a_v2?signature=client-secret")
+	})})
 
-	target := nativeHTTPTestTarget(t, upstream.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)
-	err := NewNativeHTTPRelay(nil).Relay(context.Background(), httptest.NewRecorder(),
+	w := httptest.NewRecorder()
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w,
 		httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2?signature=client-secret&trace=1", strings.NewReader(`{"model":"speech-2.8-hd"}`)),
 		[]NativeRelayTarget{target})
 
-	require.Error(t, err)
+	require.ErrorIs(t, err, errNativeRelayUpstream)
 	require.NotContains(t, err.Error(), "signature=")
 	require.NotContains(t, err.Error(), "client-secret")
+	require.Empty(t, w.Body.Bytes())
 }
 
 func TestNativeHTTPRelayRetriesPreCommitBusinessFailure(t *testing.T) {
@@ -293,6 +400,46 @@ func TestNativeHTTPRelayRetriesPreCommitBusinessFailure(t *testing.T) {
 	require.Equal(t, int32(1), firstCalls.Load())
 	require.Equal(t, int32(1), secondCalls.Load())
 	require.Contains(t, w.Body.String(), `"status_code":0`)
+}
+
+func TestNativeHTTPRelayForwardsFinalMiniMaxBusinessFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":2013,"status_msg":"invalid params"}}`))
+	}))
+	defer upstream.Close()
+
+	inbound := httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd"}`))
+	w := httptest.NewRecorder()
+
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w, inbound,
+		[]NativeRelayTarget{nativeHTTPTestTarget(t, upstream.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.JSONEq(t, `{"base_resp":{"status_code":2013,"status_msg":"invalid params"}}`, w.Body.String())
+}
+
+func TestNativeHTTPRelayReportsFinalBusinessFailureToObserver(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":1004,"status_msg":"quota"}}`))
+	}))
+	defer upstream.Close()
+
+	observer := &nativeRelayObserverCapture{}
+	ctx := WithNativeRelayObserver(context.Background(), observer)
+	w := httptest.NewRecorder()
+	err := NewNativeHTTPRelay(nil).Relay(ctx, w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd"}`)),
+		[]NativeRelayTarget{nativeHTTPTestTarget(t, upstream.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)})
+
+	require.NoError(t, err)
+	require.Len(t, observer.attempts, 1)
+	require.Len(t, observer.results, 1)
+	require.Equal(t, http.StatusOK, observer.results[0].StatusCode)
+	require.ErrorContains(t, observer.results[0].Err, "status_code=1004")
+	require.False(t, observer.results[0].Retry)
 }
 
 func TestNativeHTTPRelayRetriesCompressedMiniMaxBusinessFailure(t *testing.T) {
@@ -517,6 +664,19 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 	return f(r)
+}
+
+type nativeRelayObserverCapture struct {
+	attempts []NativeRelayAttempt
+	results  []NativeRelayResult
+}
+
+func (o *nativeRelayObserverCapture) OnNativeRelayAttempt(_ context.Context, attempt NativeRelayAttempt) {
+	o.attempts = append(o.attempts, attempt)
+}
+
+func (o *nativeRelayObserverCapture) OnNativeRelayResult(_ context.Context, result NativeRelayResult) {
+	o.results = append(o.results, result)
 }
 
 type errorAfterFirstReadBody struct {

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
@@ -24,9 +25,45 @@ type NativeVoiceHandlersParams struct {
 	fx.In
 
 	ChannelService              *biz.ChannelService
+	RequestService              *biz.RequestService
 	SystemService               *biz.SystemService
 	ChannelLimiterManager       *orchestrator.ChannelLimiterManager
 	ProviderQuotaStatusProvider orchestrator.ProviderQuotaStatusProvider
+}
+
+func readNativeVoiceRequestBody(req *http.Request) ([]byte, error) {
+	if req == nil || req.Body == nil {
+		return nil, nil
+	}
+	original := req.Body
+	body, err := io.ReadAll(original)
+	req.Body = &nativeVoiceRequestBody{Reader: bytes.NewReader(body), Closer: original}
+	if err != nil {
+		return nil, fmt.Errorf("failed to read native voice request body: %w", err)
+	}
+	return body, nil
+}
+
+func nativeVoiceLogModel(body []byte, modelPath string) string {
+	if len(body) == 0 || modelPath == "" {
+		return ""
+	}
+	var payload any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	model, present, err := nativeVoiceJSONModelAtPath(payload, modelPath)
+	if err != nil || !present {
+		return ""
+	}
+	return model
+}
+
+func nativeVoiceHTTPStreaming(body []byte) bool {
+	var payload struct {
+		Stream bool `json:"stream"`
+	}
+	return json.Unmarshal(body, &payload) == nil && payload.Stream
 }
 
 type NativeVoiceHandlers struct {
@@ -36,6 +73,7 @@ type NativeVoiceHandlers struct {
 
 func NewNativeVoiceHandlers(params NativeVoiceHandlersParams) *NativeVoiceHandlers {
 	channelService := params.ChannelService
+	requestService := params.RequestService
 	systemService := params.SystemService
 
 	rateLimitTracker := orchestrator.NewChannelRequestTracker()
@@ -57,10 +95,10 @@ func NewNativeVoiceHandlers(params NativeVoiceHandlersParams) *NativeVoiceHandle
 
 	handlers := &NativeVoiceHandlers{}
 	handlers.HandleHTTP = func(c *gin.Context) {
-		serveNativeVoiceHTTP(c, selector, loadBalancer, httpRelay)
+		serveNativeVoiceHTTP(c, selector, loadBalancer, httpRelay, requestService)
 	}
 	handlers.HandleWebSocket = func(c *gin.Context) {
-		serveNativeVoiceWebSocket(c, selector, loadBalancer, wsRelay)
+		serveNativeVoiceWebSocket(c, selector, loadBalancer, wsRelay, requestService)
 	}
 
 	return handlers
@@ -95,7 +133,8 @@ func RegisterNativeVoiceWebSocketRoutes(router gin.IRoutes, handlers *NativeVoic
 	router.GET("/api/v3/tts/unidirectional/stream", handlers.HandleWebSocket)
 }
 
-func serveNativeVoiceHTTP(c *gin.Context, selector *voice.CandidateSelector, loadBalancer *orchestrator.LoadBalancer, relay *voice.NativeHTTPRelay) {
+func serveNativeVoiceHTTP(c *gin.Context, selector *voice.CandidateSelector, loadBalancer *orchestrator.LoadBalancer, relay *voice.NativeHTTPRelay, requestService *biz.RequestService) {
+	startedAt := time.Now()
 	ctx := c.Request.Context()
 	protocol, targets, err := resolveNativeVoiceTargets(ctx, selector, c.Request, objects.ChannelEndpointTransportHTTP)
 	if err != nil {
@@ -108,13 +147,38 @@ func serveNativeVoiceHTTP(c *gin.Context, selector *voice.CandidateSelector, loa
 		return
 	}
 
+	body, err := readNativeVoiceRequestBody(c.Request)
+	if err != nil {
+		JSONError(c, http.StatusBadRequest, err)
+		return
+	}
+	recorder := newNativeVoiceRequestRecorder(
+		ctx,
+		requestService,
+		protocol,
+		nativeVoiceLogModel(body, protocol.ModelPath),
+		nativeVoiceHTTPStreaming(body),
+		c.Request,
+		body,
+		startedAt,
+	)
+	if recorder != nil {
+		ctx = voice.WithNativeRelayObserver(ctx, recorder)
+		c.Request = c.Request.WithContext(ctx)
+	}
+
 	trackNativeVoiceSelection(loadBalancer, targets)
-	if err := relay.Relay(ctx, c.Writer, c.Request, targets); err != nil && !c.Writer.Written() {
-		JSONError(c, nativeVoiceErrorStatus(err), err)
+	relayErr := relay.Relay(ctx, c.Writer, c.Request, targets)
+	if recorder != nil {
+		recorder.finish(ctx, relayErr)
+	}
+	if relayErr != nil && !c.Writer.Written() {
+		JSONError(c, nativeVoiceErrorStatus(relayErr), relayErr)
 	}
 }
 
-func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector, loadBalancer *orchestrator.LoadBalancer, relay *voice.NativeWebSocketRelay) {
+func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector, loadBalancer *orchestrator.LoadBalancer, relay *voice.NativeWebSocketRelay, requestService *biz.RequestService) {
+	startedAt := time.Now()
 	ctx := c.Request.Context()
 	protocol, targets, err := resolveNativeVoiceTargets(ctx, selector, c.Request, objects.ChannelEndpointTransportWebSocket)
 	if err != nil {
@@ -127,9 +191,28 @@ func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector
 		return
 	}
 
+	recorder := newNativeVoiceRequestRecorder(
+		ctx,
+		requestService,
+		protocol,
+		strings.TrimSpace(c.Query("model")),
+		true,
+		c.Request,
+		nil,
+		startedAt,
+	)
+	if recorder != nil {
+		ctx = voice.WithNativeRelayObserver(ctx, recorder)
+		c.Request = c.Request.WithContext(ctx)
+	}
+
 	trackNativeVoiceSelection(loadBalancer, targets)
-	if err := relay.Relay(ctx, c.Writer, c.Request, targets); err != nil && !c.Writer.Written() {
-		JSONError(c, nativeVoiceErrorStatus(err), err)
+	relayErr := relay.Relay(ctx, c.Writer, c.Request, targets)
+	if recorder != nil {
+		recorder.finish(ctx, relayErr)
+	}
+	if relayErr != nil && !c.Writer.Written() {
+		JSONError(c, nativeVoiceErrorStatus(relayErr), relayErr)
 	}
 }
 

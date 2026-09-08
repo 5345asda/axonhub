@@ -2,6 +2,7 @@ package voice
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -67,6 +68,119 @@ func TestNativeWebSocketRelayFailsOverBeforeDownstreamUpgrade(t *testing.T) {
 	require.Equal(t, websocket.TextMessage, messageType)
 	require.Equal(t, "echo:hello", string(message))
 	require.True(t, upstreamAuth.Load())
+}
+
+func TestNativeWebSocketRelayForwardsFinalUpstreamHandshakeResponse(t *testing.T) {
+	var firstCalls, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"first candidate"}`))
+	}))
+	defer first.Close()
+
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "7")
+		w.Header().Set("X-Upstream-Trace", "trace-123")
+		w.Header().Set("Authorization", "provider-secret")
+		w.Header().Set("Set-Cookie", "provider-secret=1")
+		w.Header().Set("Connection", "X-Provider-Hop")
+		w.Header().Set("X-Provider-Hop", "remove")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid provider credentials"}`))
+	}))
+	defer second.Close()
+
+	relay := NewNativeWebSocketRelay(nil)
+	relay.dialer = &websocket.Dialer{HandshakeTimeout: time.Second}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := relay.Relay(context.Background(), w, r, []NativeRelayTarget{
+			nativeWebSocketTestTarget(t, first.URL, objects.NativeVoiceAPIFormatMiniMaxT2ABidi, 1),
+			nativeWebSocketTestTarget(t, second.URL, objects.NativeVoiceAPIFormatMiniMaxT2ABidi, 2),
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+	}))
+	defer proxy.Close()
+
+	proxyURL := "ws" + proxy.URL[len("http"):]
+	client, response, err := websocket.DefaultDialer.Dial(proxyURL+"/ws/v1/t2a_v2_bidi", nil)
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.NotNil(t, response)
+	defer response.Body.Close()
+
+	body, readErr := io.ReadAll(response.Body)
+	require.NoError(t, readErr)
+	require.Equal(t, http.StatusUnauthorized, response.StatusCode)
+	require.JSONEq(t, `{"error":"invalid provider credentials"}`, string(body))
+	require.Equal(t, "application/json", response.Header.Get("Content-Type"))
+	require.Equal(t, "7", response.Header.Get("Retry-After"))
+	require.Equal(t, "trace-123", response.Header.Get("X-Upstream-Trace"))
+	require.Empty(t, response.Header.Get("Authorization"))
+	require.Empty(t, response.Header.Get("Set-Cookie"))
+	require.Empty(t, response.Header.Get("Connection"))
+	require.Empty(t, response.Header.Get("X-Provider-Hop"))
+	require.Equal(t, int32(1), firstCalls.Load())
+	require.Equal(t, int32(1), secondCalls.Load())
+}
+
+func TestNativeWebSocketRelayPreservesHandshakeResponseAfterTransportFailure(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid provider credentials"}`))
+	}))
+	defer first.Close()
+
+	second := httptest.NewServer(http.NotFoundHandler())
+	secondURL := second.URL
+	second.Close()
+
+	relay := NewNativeWebSocketRelay(nil)
+	relay.dialer = &websocket.Dialer{HandshakeTimeout: time.Second}
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := relay.Relay(context.Background(), w, r, []NativeRelayTarget{
+			nativeWebSocketTestTarget(t, first.URL, objects.NativeVoiceAPIFormatMiniMaxT2ABidi, 1),
+			nativeWebSocketTestTarget(t, secondURL, objects.NativeVoiceAPIFormatMiniMaxT2ABidi, 2),
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusBadGateway)
+		}
+	}))
+	defer proxy.Close()
+
+	proxyURL := "ws" + proxy.URL[len("http"):]
+	client, response, err := websocket.DefaultDialer.Dial(proxyURL+"/ws/v1/t2a_v2_bidi", nil)
+	require.Error(t, err)
+	require.Nil(t, client)
+	require.NotNil(t, response)
+	defer response.Body.Close()
+
+	body, readErr := io.ReadAll(response.Body)
+	require.NoError(t, readErr)
+	require.Equal(t, http.StatusUnauthorized, response.StatusCode)
+	require.JSONEq(t, `{"error":"invalid provider credentials"}`, string(body))
+}
+
+func TestNativeWebSocketRelayKeepsTransportFailuresOpaque(t *testing.T) {
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	upstreamURL := upstream.URL
+	upstream.Close()
+
+	inbound := httptest.NewRequest(http.MethodGet, "http://axonhub.test/ws/v1/t2a_v2_bidi", nil)
+	inbound.Header.Set("Connection", "Upgrade")
+	inbound.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+
+	err := NewNativeWebSocketRelay(nil).Relay(context.Background(), w, inbound, []NativeRelayTarget{
+		nativeWebSocketTestTarget(t, upstreamURL, objects.NativeVoiceAPIFormatMiniMaxT2ABidi, 1),
+	})
+
+	require.ErrorIs(t, err, errNativeRelayUpstream)
+	require.NotContains(t, err.Error(), upstreamURL)
+	require.Zero(t, w.Body.Len())
 }
 
 func TestNativeWebSocketRelayDoesNotRetryAfterApplicationFrame(t *testing.T) {

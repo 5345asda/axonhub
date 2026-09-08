@@ -50,9 +50,12 @@ func (r *NativeWebSocketRelay) Relay(ctx context.Context, w http.ResponseWriter,
 	}
 
 	var lastErr error
+	var lastHandshakeResponse *nativeWebSocketHandshakeResponse
 	var upstreamConn *websocket.Conn
 	var upstreamSlot *nativeRelayAdmissionSlot
-	for _, target := range targets {
+	var upstreamAttemptID int
+	var upstreamAttemptStarted time.Time
+	for index, target := range targets {
 		if target.Channel == nil {
 			lastErr = errors.New("native websocket relay target is missing channel")
 			continue
@@ -62,18 +65,52 @@ func (r *NativeWebSocketRelay) Relay(ctx context.Context, w http.ResponseWriter,
 			lastErr = fmt.Errorf("native voice channel admission failed: %w", admissionErr)
 			continue
 		}
-		conn, err := r.dialUpstream(ctx, inbound, target)
+		attemptStarted := time.Now()
+		conn, response, attemptURL, attemptHeaders, err := r.dialUpstream(ctx, inbound, target)
+		notifyNativeRelayAttempt(ctx, NativeRelayAttempt{ID: index, Target: target, URL: attemptURL, RequestHeaders: attemptHeaders, StartedAt: attemptStarted})
 		if err != nil {
 			slot.release()
 			lastErr = err
+			if handshakeResponse := captureNativeWebSocketHandshakeResponse(response); handshakeResponse != nil {
+				lastHandshakeResponse = handshakeResponse
+				handshakeResponse.attemptID = index
+				handshakeResponse.startedAt = attemptStarted
+				handshakeResponse.err = err
+				notifyNativeRelayResult(ctx, NativeRelayResult{
+					ID: index, StatusCode: handshakeResponse.statusCode, ResponseHeaders: handshakeResponse.header,
+					ResponseBytes: int64(len(handshakeResponse.body)), Err: err, Retry: index < len(targets)-1,
+					Duration: time.Since(attemptStarted),
+				})
+			} else {
+				notifyNativeRelayResult(ctx, NativeRelayResult{ID: index, Err: err, Retry: index < len(targets)-1, Duration: time.Since(attemptStarted)})
+			}
 			continue
 		}
 		upstreamConn = conn
 		upstreamSlot = slot
+		upstreamAttemptID = index
+		upstreamAttemptStarted = attemptStarted
 		break
 	}
 
 	if upstreamConn == nil {
+		if lastHandshakeResponse != nil {
+			writeErr := writeNativeWebSocketHandshakeResponse(w, lastHandshakeResponse)
+			result := NativeRelayResult{
+				ID:              lastHandshakeResponse.attemptID,
+				StatusCode:      lastHandshakeResponse.statusCode,
+				ResponseHeaders: lastHandshakeResponse.header,
+				ResponseBytes:   int64(len(lastHandshakeResponse.body)),
+				Err:             lastHandshakeResponse.err,
+				Duration:        time.Since(lastHandshakeResponse.startedAt),
+			}
+			if writeErr != nil {
+				result.Err = writeErr
+				result.Committed = true
+			}
+			notifyNativeRelayResult(ctx, result)
+			return writeErr
+		}
 		if lastErr == nil {
 			lastErr = errors.New("native websocket relay exhausted targets")
 		}
@@ -90,24 +127,47 @@ func (r *NativeWebSocketRelay) Relay(ctx context.Context, w http.ResponseWriter,
 	}
 	downstreamConn, err := new(websocket.Upgrader).Upgrade(w, inbound, responseHeader)
 	if err != nil {
+		notifyNativeRelayResult(ctx, NativeRelayResult{ID: upstreamAttemptID, StatusCode: http.StatusSwitchingProtocols, Err: err, Duration: time.Since(upstreamAttemptStarted)})
 		return fmt.Errorf("failed to upgrade downstream websocket: %w", err)
 	}
 	defer downstreamConn.Close()
 
-	if err := r.proxyConnections(ctx, downstreamConn, upstreamConn); err != nil {
-		return err
+	proxyErr := r.proxyConnections(ctx, downstreamConn, upstreamConn)
+	notifyNativeRelayResult(ctx, NativeRelayResult{ID: upstreamAttemptID, StatusCode: http.StatusSwitchingProtocols, Err: proxyErr, Committed: true, Duration: time.Since(upstreamAttemptStarted)})
+	if proxyErr != nil {
+		return proxyErr
 	}
 	return nil
 }
 
-func (r *NativeWebSocketRelay) dialUpstream(ctx context.Context, inbound *http.Request, target NativeRelayTarget) (*websocket.Conn, error) {
+func (r *NativeWebSocketRelay) dialUpstream(ctx context.Context, inbound *http.Request, target NativeRelayTarget) (*websocket.Conn, *http.Response, string, http.Header, error) {
 	if inbound == nil || inbound.URL == nil {
-		return nil, errors.New("native websocket relay request URL is required")
+		return nil, nil, "", nil, errors.New("native websocket relay request URL is required")
+	}
+
+	upstreamURL, requestHeader, err := nativeWebSocketDialRequest(ctx, inbound, target)
+	if err != nil {
+		return nil, nil, "", nil, err
+	}
+
+	dialer := r.dialerForTarget(target)
+	conn, resp, err := dialer.DialContext(ctx, upstreamURL, requestHeader)
+	if err != nil {
+		r.admission.observeHTTPResponse(target.Channel, resp)
+		return nil, resp, upstreamURL, requestHeader, fmt.Errorf("failed to dial native websocket upstream: %w", err)
+	}
+
+	return conn, nil, upstreamURL, requestHeader, nil
+}
+
+func nativeWebSocketDialRequest(ctx context.Context, inbound *http.Request, target NativeRelayTarget) (string, http.Header, error) {
+	if inbound == nil || inbound.URL == nil {
+		return "", nil, errors.New("native websocket relay request URL is required")
 	}
 
 	upstreamURL, err := buildNativeWebSocketURL(inbound.URL, target)
 	if err != nil {
-		return nil, err
+		return "", nil, err
 	}
 
 	requestHeader := filterNativeWebSocketRelayHeaders(inbound.Header)
@@ -119,17 +179,51 @@ func (r *NativeWebSocketRelay) dialUpstream(ctx context.Context, inbound *http.R
 		}
 	}
 
-	dialer := r.dialerForTarget(target)
-	conn, resp, err := dialer.DialContext(ctx, upstreamURL.String(), requestHeader)
-	if err != nil {
-		r.admission.observeHTTPResponse(target.Channel, resp)
+	return upstreamURL.String(), requestHeader, nil
+}
+
+type nativeWebSocketHandshakeResponse struct {
+	statusCode int
+	header     http.Header
+	body       []byte
+	attemptID  int
+	startedAt  time.Time
+	err        error
+}
+
+func captureNativeWebSocketHandshakeResponse(resp *http.Response) *nativeWebSocketHandshakeResponse {
+	if resp == nil || resp.StatusCode < http.StatusBadRequest {
 		if resp != nil && resp.Body != nil {
 			_ = resp.Body.Close()
 		}
-		return nil, fmt.Errorf("failed to dial native websocket upstream: %w", err)
+		return nil
 	}
 
-	return conn, nil
+	response := &nativeWebSocketHandshakeResponse{
+		statusCode: resp.StatusCode,
+		header:     resp.Header.Clone(),
+	}
+	if resp.Body != nil {
+		response.body, _ = io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+	}
+	return response
+}
+
+func writeNativeWebSocketHandshakeResponse(w http.ResponseWriter, response *nativeWebSocketHandshakeResponse) error {
+	if w == nil || response == nil {
+		return errors.New("native websocket handshake response is required")
+	}
+
+	copyNativeHTTPRelayResponseHeaders(w.Header(), response.header)
+	// Gorilla may retain only a prefix of a failed handshake response body.
+	w.Header().Del("Content-Length")
+	w.WriteHeader(response.statusCode)
+	if len(response.body) == 0 {
+		return nil
+	}
+	_, err := w.Write(response.body)
+	return err
 }
 
 func (r *NativeWebSocketRelay) dialerForTarget(target NativeRelayTarget) *websocket.Dialer {

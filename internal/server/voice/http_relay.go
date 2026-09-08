@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/server/biz"
@@ -86,8 +87,12 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 	}
 	streamingRequest := nativeVoiceRequestIsStreaming(body)
 
-	var lastErr error
-	for _, target := range targets {
+	var (
+		lastErr         error
+		lastResponse    *nativeHTTPResponseSnapshot
+		nativeAttemptID int
+	)
+	for index, target := range targets {
 		if target.Channel == nil {
 			lastErr = errors.New("native voice relay target is missing channel")
 			continue
@@ -107,8 +112,32 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 			continue
 		}
 
+		nativeAttemptID++
+		attemptStartedAt := time.Now()
+		notifyNativeRelayAttempt(ctx, NativeRelayAttempt{
+			ID:             nativeAttemptID,
+			Target:         target,
+			URL:            outboundReq.URL.String(),
+			RequestHeaders: outboundReq.Header.Clone(),
+			StartedAt:      attemptStartedAt,
+		})
+
 		resp, respErr := client.Do(outboundReq)
 		if respErr != nil {
+			statusCode := 0
+			var responseHeaders http.Header
+			if resp != nil {
+				statusCode = resp.StatusCode
+				responseHeaders = resp.Header.Clone()
+			}
+			notifyNativeRelayResult(ctx, NativeRelayResult{
+				ID:              nativeAttemptID,
+				StatusCode:      statusCode,
+				ResponseHeaders: responseHeaders,
+				Err:             respErr,
+				Retry:           index < len(targets)-1,
+				Duration:        time.Since(attemptStartedAt),
+			})
 			if resp != nil && resp.Body != nil {
 				_ = resp.Body.Close()
 			}
@@ -118,22 +147,91 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 		}
 
 		r.admission.observeHTTPResponse(target.Channel, resp)
-		committed, retry, attemptErr := r.writeResponse(w, resp, target, streamingRequest)
-		if resp.Body != nil {
-			_ = resp.Body.Close()
-		}
-		slot.release()
-		if attemptErr != nil {
-			if committed {
-				return attemptErr
+		retry, attemptErr := classifyNativeHTTPResponse(resp, target, streamingRequest)
+		if retry {
+			if !nativeHTTPResponseCanBeForwarded(resp, attemptErr) {
+				notifyNativeRelayResult(ctx, NativeRelayResult{
+					ID:              nativeAttemptID,
+					StatusCode:      resp.StatusCode,
+					ResponseHeaders: resp.Header.Clone(),
+					Err:             attemptErr,
+					Retry:           index < len(targets)-1,
+					Duration:        time.Since(attemptStartedAt),
+				})
+				if resp.Body != nil {
+					_ = resp.Body.Close()
+				}
+				slot.release()
+				lastErr = attemptErr
+				continue
 			}
-			if !retry {
-				return nativeRelayPublicError(attemptErr)
+			response := captureNativeHTTPResponse(resp, nativeAttemptID, attemptStartedAt, attemptErr)
+			if lastResponse != nil {
+				notifyNativeRelayResult(ctx, lastResponse.result(true, false, lastResponse.attempt.ResponseBytes, nil))
+				lastResponse.close()
 			}
+			lastResponse = response
+			if lastResponse == nil {
+				lastErr = errors.New("native voice upstream response is nil")
+				slot.release()
+				continue
+			}
+			slot.release()
 			lastErr = attemptErr
 			continue
 		}
 
+		committed, responseBytes, writeErr := writeNativeHTTPResponse(w, resp.StatusCode, resp.Header, resp.Body)
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		slot.release()
+
+		if writeErr != nil && !committed {
+			notifyNativeRelayResult(ctx, NativeRelayResult{
+				ID:              nativeAttemptID,
+				StatusCode:      resp.StatusCode,
+				ResponseHeaders: resp.Header.Clone(),
+				ResponseBytes:   responseBytes,
+				Err:             writeErr,
+				Retry:           index < len(targets)-1,
+				Duration:        time.Since(attemptStartedAt),
+			})
+			lastErr = writeErr
+			continue
+		}
+
+		if lastResponse != nil {
+			notifyNativeRelayResult(ctx, lastResponse.result(true, false, lastResponse.attempt.ResponseBytes, nil))
+			lastResponse.close()
+			lastResponse = nil
+		}
+		notifyNativeRelayResult(ctx, NativeRelayResult{
+			ID:              nativeAttemptID,
+			StatusCode:      resp.StatusCode,
+			ResponseHeaders: resp.Header.Clone(),
+			ResponseBytes:   responseBytes,
+			Err:             writeErr,
+			Committed:       committed,
+			Duration:        time.Since(attemptStartedAt),
+		})
+		if writeErr != nil {
+			return writeErr
+		}
+		return nil
+	}
+
+	if lastResponse != nil {
+		committed, responseBytes, writeErr := lastResponse.writeTo(w)
+		result := lastResponse.result(false, committed, responseBytes, writeErr)
+		lastResponse.close()
+		notifyNativeRelayResult(ctx, result)
+		if writeErr != nil {
+			if committed {
+				return writeErr
+			}
+			return nativeRelayPublicError(writeErr)
+		}
 		return nil
 	}
 
@@ -282,47 +380,128 @@ func isNativeHTTPRelayCredentialHeader(key string) bool {
 	}
 }
 
-func (r *NativeHTTPRelay) writeResponse(
-	w http.ResponseWriter,
-	resp *http.Response,
-	target NativeRelayTarget,
-	streamingRequest bool,
-) (bool, bool, error) {
+func classifyNativeHTTPResponse(resp *http.Response, target NativeRelayTarget, streamingRequest bool) (bool, error) {
 	if resp == nil {
-		return false, true, errors.New("native voice upstream response is nil")
-	}
-	if w == nil {
-		return false, false, errors.New("native voice downstream writer is nil")
+		return true, errors.New("native voice upstream response is nil")
 	}
 	if resp.Body == nil {
 		resp.Body = io.NopCloser(strings.NewReader(""))
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest && httpclient.IsHTTPStatusCodeRetryable(resp.StatusCode) {
-		return false, true, fmt.Errorf("native voice upstream returned retryable status %d", resp.StatusCode)
-	}
-	if resp.StatusCode >= http.StatusBadRequest {
-		return false, false, fmt.Errorf("native voice upstream returned status %d", resp.StatusCode)
+		return true, fmt.Errorf("native voice upstream returned retryable status %d", resp.StatusCode)
 	}
 
 	if target.Protocol.InspectBusinessStatus {
 		if err := inspectNativeHTTPBusinessStatus(resp, streamingRequest); err != nil {
-			return false, true, err
+			return true, err
 		}
 	}
 
-	firstChunk, rest, readErr := readFirstChunk(resp.Body)
-	if readErr != nil {
-		return false, true, readErr
+	return false, nil
+}
+
+func nativeHTTPResponseCanBeForwarded(resp *http.Response, err error) bool {
+	if resp == nil {
+		return false
+	}
+	if resp.StatusCode >= http.StatusBadRequest && httpclient.IsHTTPStatusCodeRetryable(resp.StatusCode) {
+		return true
+	}
+	var businessErr *nativeHTTPBusinessStatusError
+	return errors.As(err, &businessErr)
+}
+
+func captureNativeHTTPResponse(resp *http.Response, attemptID int, startedAt time.Time, err error) *nativeHTTPResponseSnapshot {
+	if resp == nil {
+		return nil
+	}
+	body := resp.Body
+	if body == nil {
+		body = io.NopCloser(strings.NewReader(""))
+	}
+	resp.Body = nil
+	return &nativeHTTPResponseSnapshot{
+		statusCode: resp.StatusCode,
+		header:     resp.Header.Clone(),
+		body:       body,
+		attempt: NativeRelayResult{
+			ID:              attemptID,
+			StatusCode:      resp.StatusCode,
+			ResponseHeaders: resp.Header.Clone(),
+			ResponseBytes:   nativeHTTPResponseContentLength(resp),
+			Err:             err,
+			Duration:        time.Since(startedAt),
+		},
+	}
+}
+
+func nativeHTTPResponseContentLength(resp *http.Response) int64 {
+	if resp == nil || resp.ContentLength < 0 {
+		return 0
+	}
+	return resp.ContentLength
+}
+
+type nativeHTTPResponseSnapshot struct {
+	statusCode int
+	header     http.Header
+	body       io.ReadCloser
+	attempt    NativeRelayResult
+}
+
+func (s *nativeHTTPResponseSnapshot) close() {
+	if s == nil || s.body == nil {
+		return
+	}
+	_ = s.body.Close()
+	s.body = nil
+}
+
+func (s *nativeHTTPResponseSnapshot) writeTo(w http.ResponseWriter) (bool, int64, error) {
+	if s == nil {
+		return false, 0, errors.New("native voice response snapshot is nil")
+	}
+	return writeNativeHTTPResponse(w, s.statusCode, s.header, s.body)
+}
+
+func (s *nativeHTTPResponseSnapshot) result(retry, committed bool, responseBytes int64, err error) NativeRelayResult {
+	if s == nil {
+		return NativeRelayResult{Err: err, Retry: retry, Committed: committed, ResponseBytes: responseBytes}
+	}
+	result := s.attempt
+	result.Retry = retry
+	result.Committed = committed
+	result.ResponseBytes = responseBytes
+	if err != nil {
+		result.Err = err
+	}
+	return result
+}
+
+func writeNativeHTTPResponse(w http.ResponseWriter, statusCode int, header http.Header, body io.Reader) (bool, int64, error) {
+	if w == nil {
+		return false, 0, errors.New("native voice downstream writer is nil")
+	}
+	if body == nil {
+		body = strings.NewReader("")
 	}
 
-	copyNativeHTTPRelayResponseHeaders(w.Header(), resp.Header)
-	w.WriteHeader(resp.StatusCode)
+	firstChunk, rest, readErr := readFirstChunk(body)
+	if readErr != nil {
+		return false, 0, readErr
+	}
+
+	copyNativeHTTPRelayResponseHeaders(w.Header(), header)
+	w.WriteHeader(statusCode)
 	committed := true
+	var responseBytes int64
 
 	if len(firstChunk) > 0 {
-		if _, err := w.Write(firstChunk); err != nil {
-			return committed, false, err
+		written, err := w.Write(firstChunk)
+		responseBytes += int64(written)
+		if err != nil {
+			return committed, responseBytes, err
 		}
 	}
 
@@ -331,8 +510,10 @@ func (r *NativeHTTPRelay) writeResponse(
 	}
 
 	if rest != nil {
-		if _, err := io.Copy(flushWriter{w: w}, rest); err != nil {
-			return committed, false, err
+		written, err := io.Copy(flushWriter{w: w}, rest)
+		responseBytes += written
+		if err != nil {
+			return committed, responseBytes, err
 		}
 	}
 
@@ -340,7 +521,7 @@ func (r *NativeHTTPRelay) writeResponse(
 		f.Flush()
 	}
 
-	return committed, false, nil
+	return committed, responseBytes, nil
 }
 
 func readFirstChunk(body io.Reader) ([]byte, io.Reader, error) {
@@ -525,6 +706,18 @@ type nativeHTTPBaseResp struct {
 	StatusMsg  string `json:"status_msg"`
 }
 
+type nativeHTTPBusinessStatusError struct {
+	statusCode int
+	statusMsg  string
+}
+
+func (e *nativeHTTPBusinessStatusError) Error() string {
+	if e == nil {
+		return "native voice business failure"
+	}
+	return fmt.Sprintf("native voice business failure: status_code=%d status_msg=%s", e.statusCode, e.statusMsg)
+}
+
 func inspectNativeHTTPBusinessPayload(body []byte, sse bool) error {
 	data := bytes.TrimSpace(body)
 	if sse {
@@ -536,7 +729,7 @@ func inspectNativeHTTPBusinessPayload(body []byte, sse bool) error {
 
 	var payload nativeHTTPBusinessPayload
 	if json.Unmarshal(data, &payload) == nil && payload.BaseResp != nil && payload.BaseResp.StatusCode != 0 {
-		return fmt.Errorf("native voice business failure: status_code=%d status_msg=%s", payload.BaseResp.StatusCode, payload.BaseResp.StatusMsg)
+		return &nativeHTTPBusinessStatusError{statusCode: payload.BaseResp.StatusCode, statusMsg: payload.BaseResp.StatusMsg}
 	}
 	return nil
 }
