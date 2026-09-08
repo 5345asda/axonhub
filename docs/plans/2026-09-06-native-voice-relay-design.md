@@ -41,13 +41,14 @@ regional authority must be configured explicitly on the endpoint.
   selection keeps the complete ordered candidate list instead of the ordinary
   LLM retry-policy `topK`, and it never crosses provider or transport.
 - Bailian's shared realtime paths require an unambiguous configured format or
-  explicit model protocol mapping. Names such as `asr` or `tts` are not routing
-  signals.
+  an exact `ModelProtocols` mapping for the single `model` query value. Names
+  such as `asr` or `tts` are not routing signals.
 - A native WebSocket request whose model is carried inside an opaque provider
   frame is relayed without rewriting that frame. Endpoint/model configuration
   must therefore make the candidate pool unambiguous before the frame arrives.
-- A generic WebSocket `?model=` query is retained only for the upstream relay;
-  it is not authoritative for candidate or Profile authorization. WebSocket
+- A generic WebSocket `?model=` query is retained for upstream relay. On a
+  shared Bailian path it may select an exact configured protocol only; it is
+  not authoritative for candidate or Profile authorization. WebSocket
   selection remains opaque until the provider frame is accepted.
 - A visible model must be an exact direct provider model. When an opaque
   WebSocket is constrained by a Profile model list, every direct model declared

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -49,17 +50,17 @@ func NewNativeVoiceHandlers(params NativeVoiceHandlersParams) *NativeVoiceHandle
 		orchestrator.NewQuotaAwareStrategy(params.ProviderQuotaStatusProvider, systemService),
 	)
 
-	selector := voice.NewCandidateSelector(channelService.GetEnabledChannels, loadBalancer.SortAll)
+	selector := voice.NewCandidateSelector(channelService.GetEnabledChannels, loadBalancer.SortAllWithoutTracking)
 	admission := voice.NewNativeRelayAdmission(params.ChannelLimiterManager, rateLimitTracker)
 	httpRelay := voice.NewNativeHTTPRelay(admission)
 	wsRelay := voice.NewNativeWebSocketRelay(admission)
 
 	handlers := &NativeVoiceHandlers{}
 	handlers.HandleHTTP = func(c *gin.Context) {
-		serveNativeVoiceHTTP(c, selector, httpRelay)
+		serveNativeVoiceHTTP(c, selector, loadBalancer, httpRelay)
 	}
 	handlers.HandleWebSocket = func(c *gin.Context) {
-		serveNativeVoiceWebSocket(c, selector, wsRelay)
+		serveNativeVoiceWebSocket(c, selector, loadBalancer, wsRelay)
 	}
 
 	return handlers
@@ -94,7 +95,7 @@ func RegisterNativeVoiceWebSocketRoutes(router gin.IRoutes, handlers *NativeVoic
 	router.GET("/api/v3/tts/unidirectional/stream", handlers.HandleWebSocket)
 }
 
-func serveNativeVoiceHTTP(c *gin.Context, selector *voice.CandidateSelector, relay *voice.NativeHTTPRelay) {
+func serveNativeVoiceHTTP(c *gin.Context, selector *voice.CandidateSelector, loadBalancer *orchestrator.LoadBalancer, relay *voice.NativeHTTPRelay) {
 	ctx := c.Request.Context()
 	protocol, targets, err := resolveNativeVoiceTargets(ctx, selector, c.Request, objects.ChannelEndpointTransportHTTP)
 	if err != nil {
@@ -107,12 +108,13 @@ func serveNativeVoiceHTTP(c *gin.Context, selector *voice.CandidateSelector, rel
 		return
 	}
 
+	trackNativeVoiceSelection(loadBalancer, targets)
 	if err := relay.Relay(ctx, c.Writer, c.Request, targets); err != nil && !c.Writer.Written() {
 		JSONError(c, nativeVoiceErrorStatus(err), err)
 	}
 }
 
-func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector, relay *voice.NativeWebSocketRelay) {
+func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector, loadBalancer *orchestrator.LoadBalancer, relay *voice.NativeWebSocketRelay) {
 	ctx := c.Request.Context()
 	protocol, targets, err := resolveNativeVoiceTargets(ctx, selector, c.Request, objects.ChannelEndpointTransportWebSocket)
 	if err != nil {
@@ -125,9 +127,17 @@ func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector
 		return
 	}
 
+	trackNativeVoiceSelection(loadBalancer, targets)
 	if err := relay.Relay(ctx, c.Writer, c.Request, targets); err != nil && !c.Writer.Written() {
 		JSONError(c, nativeVoiceErrorStatus(err), err)
 	}
+}
+
+func trackNativeVoiceSelection(loadBalancer *orchestrator.LoadBalancer, targets []voice.NativeRelayTarget) {
+	if loadBalancer == nil || len(targets) == 0 || targets[0].Channel == nil {
+		return
+	}
+	loadBalancer.TrackSelection(&orchestrator.ChannelModelsCandidate{Channel: targets[0].Channel})
 }
 
 func nativeVoiceErrorStatus(err error) int {
@@ -164,8 +174,12 @@ func resolveNativeVoiceTargets(
 		return objects.NativeVoiceProtocol{}, nil, err
 	}
 
-	var selectedProtocol objects.NativeVoiceProtocol
-	var selectedTargets []voice.NativeRelayTarget
+	type protocolTargets struct {
+		protocol objects.NativeVoiceProtocol
+		targets  []voice.NativeRelayTarget
+	}
+
+	var routeGroups []protocolTargets
 	for _, protocol := range protocols {
 		candidates, err := selector.Select(ctx, voice.CandidateRequest{
 			APIFormat:   protocol.APIFormat,
@@ -191,18 +205,57 @@ func resolveNativeVoiceTargets(
 				Protocol: candidate.Protocol,
 			})
 		}
-		if len(selectedTargets) > 0 {
-			return objects.NativeVoiceProtocol{}, nil, fmt.Errorf("native voice route %s is ambiguous; configure one api_format or an explicit model protocol mapping", req.URL.Path)
+		if len(targets) > 0 {
+			routeGroups = append(routeGroups, protocolTargets{protocol: protocol, targets: targets})
 		}
-		selectedProtocol = protocol
-		selectedTargets = targets
 	}
 
-	if len(selectedTargets) == 0 {
+	if len(routeGroups) == 0 {
 		return objects.NativeVoiceProtocol{}, nil, errors.New("no native voice candidate matched")
 	}
+	if len(routeGroups) == 1 {
+		return routeGroups[0].protocol, routeGroups[0].targets, nil
+	}
 
-	return selectedProtocol, selectedTargets, nil
+	if protocolHint := nativeVoiceSharedRouteModelHint(req, protocols, transport); protocolHint != "" {
+		hintedGroups := make([]protocolTargets, 0, len(routeGroups))
+		for _, group := range routeGroups {
+			if nativeVoiceProtocolMatchesHint(group.targets, protocolHint) {
+				hintedGroups = append(hintedGroups, group)
+			}
+		}
+		if len(hintedGroups) == 1 {
+			return hintedGroups[0].protocol, hintedGroups[0].targets, nil
+		}
+	}
+
+	return objects.NativeVoiceProtocol{}, nil, fmt.Errorf("native voice route %s is ambiguous; configure one api_format or an exact model protocol mapping", req.URL.Path)
+}
+
+// nativeVoiceSharedRouteModelHint is only a protocol disambiguation hint for a
+// shared native WebSocket path. It is not used as the request model or as a
+// Profile authorization signal.
+func nativeVoiceSharedRouteModelHint(req *http.Request, protocols []objects.NativeVoiceProtocol, transport string) string {
+	if req == nil || req.URL == nil || transport != objects.ChannelEndpointTransportWebSocket || len(protocols) < 2 {
+		return ""
+	}
+
+	models, present := req.URL.Query()["model"]
+	if !present || len(models) != 1 {
+		return ""
+	}
+
+	return strings.TrimSpace(models[0])
+}
+
+func nativeVoiceProtocolMatchesHint(targets []voice.NativeRelayTarget, model string) bool {
+	for _, target := range targets {
+		if target.Channel != nil && slices.Contains(target.Channel.ForcedAPIFormats(model), target.Protocol.APIFormat) {
+			return true
+		}
+	}
+
+	return false
 }
 
 // Empty endpoint BaseURLs use the native registry default, never the channel's

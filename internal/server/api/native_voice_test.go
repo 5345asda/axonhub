@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,8 +18,21 @@ import (
 	"github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/server/biz"
+	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/internal/server/voice"
 )
+
+type nativeVoiceSelectionTracker map[int]int
+
+func (t nativeVoiceSelectionTracker) IncrementChannelSelection(channelID int) {
+	t[channelID]++
+}
+
+type nativeVoiceRetryPolicyProvider struct{}
+
+func (nativeVoiceRetryPolicyProvider) RetryPolicyOrDefault(context.Context) *biz.RetryPolicy {
+	return &biz.RetryPolicy{}
+}
 
 func TestExtractNativeVoiceRequestModelReadsModelAfterLargePayload(t *testing.T) {
 	body := []byte(`{"text":"` + strings.Repeat("x", 1<<20) + `","model":"speech-2.8-hd"}`)
@@ -172,6 +186,158 @@ func TestResolveNativeVoiceTargetsTreatsWebSocketQueryModelAsOpaque(t *testing.T
 	require.Error(t, err)
 	require.Empty(t, targets)
 	require.Equal(t, "allowed", req.URL.Query().Get("model"))
+}
+
+func TestResolveNativeVoiceTargetsUsesExactModelProtocolForSharedBailianPath(t *testing.T) {
+	asr, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatBailianASRRealtime)
+	require.True(t, ok)
+	tts, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatBailianTTSRealtime)
+	require.True(t, ok)
+
+	primary := &biz.Channel{Channel: &ent.Channel{
+		ID:              1,
+		Name:            "bailian",
+		Type:            channel.TypeBailian,
+		Status:          channel.StatusEnabled,
+		SupportedModels: []string{"tts-model", "asr-model"},
+		Endpoints: []objects.ChannelEndpoint{
+			{APIFormat: asr.APIFormat, Path: asr.Path, Transport: asr.Transport},
+			{APIFormat: tts.APIFormat, Path: tts.Path, Transport: tts.Transport},
+		},
+		Settings: &objects.ChannelSettings{ModelProtocols: []objects.ModelProtocol{{
+			Model:      "tts-model",
+			APIFormats: []string{tts.APIFormat},
+		}}},
+		Credentials: objects.ChannelCredentials{APIKey: "provider-key"},
+	}}
+	fallback := &biz.Channel{Channel: &ent.Channel{
+		ID:              2,
+		Name:            "bailian-tts-fallback",
+		Type:            channel.TypeBailian,
+		Status:          channel.StatusEnabled,
+		SupportedModels: []string{"tts-model"},
+		Endpoints:       []objects.ChannelEndpoint{{APIFormat: tts.APIFormat, Path: tts.Path, Transport: tts.Transport}},
+		Credentials:     objects.ChannelCredentials{APIKey: "provider-key"},
+	}}
+	tracker := nativeVoiceSelectionTracker{}
+	loadBalancer := orchestrator.NewLoadBalancer(nativeVoiceRetryPolicyProvider{}, tracker)
+	selector := voice.NewCandidateSelector(func() []*biz.Channel { return []*biz.Channel{primary, fallback} }, loadBalancer.SortAllWithoutTracking)
+	req := httptest.NewRequest(http.MethodGet, "/api-ws/v1/realtime?model=tts-model", nil)
+
+	protocol, targets, err := resolveNativeVoiceTargets(req.Context(), selector, req, objects.ChannelEndpointTransportWebSocket)
+
+	require.NoError(t, err)
+	require.Equal(t, tts.APIFormat, protocol.APIFormat)
+	require.Len(t, targets, 2)
+	for _, target := range targets {
+		require.Equal(t, tts.APIFormat, target.Protocol.APIFormat)
+	}
+	require.Empty(t, tracker)
+	trackNativeVoiceSelection(loadBalancer, targets)
+	require.Equal(t, nativeVoiceSelectionTracker{targets[0].Channel.ID: 1}, tracker)
+}
+
+func TestResolveNativeVoiceTargetsRejectsSharedBailianPathWithoutExactModelProtocol(t *testing.T) {
+	asr, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatBailianASRRealtime)
+	require.True(t, ok)
+	tts, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatBailianTTSRealtime)
+	require.True(t, ok)
+
+	channel := &biz.Channel{Channel: &ent.Channel{
+		ID:              1,
+		Name:            "bailian",
+		Type:            channel.TypeBailian,
+		Status:          channel.StatusEnabled,
+		SupportedModels: []string{"tts-model", "asr-model"},
+		Endpoints: []objects.ChannelEndpoint{
+			{APIFormat: asr.APIFormat, Path: asr.Path, Transport: asr.Transport},
+			{APIFormat: tts.APIFormat, Path: tts.Path, Transport: tts.Transport},
+		},
+		Credentials: objects.ChannelCredentials{APIKey: "provider-key"},
+	}}
+	tracker := nativeVoiceSelectionTracker{}
+	loadBalancer := orchestrator.NewLoadBalancer(nativeVoiceRetryPolicyProvider{}, tracker)
+	selector := voice.NewCandidateSelector(func() []*biz.Channel { return []*biz.Channel{channel} }, loadBalancer.SortAllWithoutTracking)
+	req := httptest.NewRequest(http.MethodGet, "/api-ws/v1/realtime?model=tts-model", nil)
+
+	_, targets, err := resolveNativeVoiceTargets(req.Context(), selector, req, objects.ChannelEndpointTransportWebSocket)
+
+	require.ErrorContains(t, err, "exact model protocol mapping")
+	require.Empty(t, targets)
+	require.Empty(t, tracker)
+}
+
+func TestResolveNativeVoiceTargetsRejectsSharedBailianPathWhenModelMapsToBothProtocols(t *testing.T) {
+	asr, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatBailianASRRealtime)
+	require.True(t, ok)
+	tts, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatBailianTTSRealtime)
+	require.True(t, ok)
+
+	channel := &biz.Channel{Channel: &ent.Channel{
+		ID:              1,
+		Name:            "bailian",
+		Type:            channel.TypeBailian,
+		Status:          channel.StatusEnabled,
+		SupportedModels: []string{"shared-model"},
+		Endpoints: []objects.ChannelEndpoint{
+			{APIFormat: asr.APIFormat, Path: asr.Path, Transport: asr.Transport},
+			{APIFormat: tts.APIFormat, Path: tts.Path, Transport: tts.Transport},
+		},
+		Settings: &objects.ChannelSettings{ModelProtocols: []objects.ModelProtocol{{
+			Model:      "shared-model",
+			APIFormats: []string{asr.APIFormat, tts.APIFormat},
+		}}},
+		Credentials: objects.ChannelCredentials{APIKey: "provider-key"},
+	}}
+	tracker := nativeVoiceSelectionTracker{}
+	loadBalancer := orchestrator.NewLoadBalancer(nativeVoiceRetryPolicyProvider{}, tracker)
+	selector := voice.NewCandidateSelector(func() []*biz.Channel { return []*biz.Channel{channel} }, loadBalancer.SortAllWithoutTracking)
+	req := httptest.NewRequest(http.MethodGet, "/api-ws/v1/realtime?model=shared-model", nil)
+
+	_, targets, err := resolveNativeVoiceTargets(req.Context(), selector, req, objects.ChannelEndpointTransportWebSocket)
+
+	require.ErrorContains(t, err, "ambiguous")
+	require.Empty(t, targets)
+	require.Empty(t, tracker)
+}
+
+func TestResolveNativeVoiceTargetsDoesNotUseSharedPathQueryForProfileAuthorization(t *testing.T) {
+	asr, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatBailianASRRealtime)
+	require.True(t, ok)
+	tts, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatBailianTTSRealtime)
+	require.True(t, ok)
+
+	channel := &biz.Channel{Channel: &ent.Channel{
+		ID:              1,
+		Name:            "bailian",
+		Type:            channel.TypeBailian,
+		Status:          channel.StatusEnabled,
+		SupportedModels: []string{"tts-model", "asr-model"},
+		Endpoints: []objects.ChannelEndpoint{
+			{APIFormat: asr.APIFormat, Path: asr.Path, Transport: asr.Transport},
+			{APIFormat: tts.APIFormat, Path: tts.Path, Transport: tts.Transport},
+		},
+		Settings: &objects.ChannelSettings{ModelProtocols: []objects.ModelProtocol{{
+			Model:      "tts-model",
+			APIFormats: []string{tts.APIFormat},
+		}}},
+		Credentials: objects.ChannelCredentials{APIKey: "provider-key"},
+	}}
+	selector := voice.NewCandidateSelector(func() []*biz.Channel { return []*biz.Channel{channel} }, nil)
+	apiKey := &ent.APIKey{Profiles: &objects.APIKeyProfiles{
+		ActiveProfile: "voice",
+		Profiles: []objects.APIKeyProfile{{
+			Name:     "voice",
+			ModelIDs: []string{"tts-model"},
+		}},
+	}}
+	req := httptest.NewRequest(http.MethodGet, "/api-ws/v1/realtime?model=tts-model", nil)
+	req = req.WithContext(contexts.WithAPIKey(req.Context(), apiKey))
+
+	_, targets, err := resolveNativeVoiceTargets(req.Context(), selector, req, objects.ChannelEndpointTransportWebSocket)
+
+	require.ErrorContains(t, err, "no native voice candidate matched")
+	require.Empty(t, targets)
 }
 
 func TestNativeVoiceEndpointBaseURLUsesNativeDefaultWhenEndpointIsEmpty(t *testing.T) {

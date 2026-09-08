@@ -185,11 +185,31 @@ func (lb *LoadBalancer) Sort(ctx context.Context, candidates []*ChannelModelsCan
 // first candidate still records a selection so weighted ordering remains
 // effective; native relays do not emit ordinary LLM performance records.
 func (lb *LoadBalancer) SortAll(ctx context.Context, candidates []*ChannelModelsCandidate, model string, stream bool) []*ChannelModelsCandidate {
+	return lb.sortAll(ctx, candidates, model, stream, true)
+}
+
+// SortAllWithoutTracking orders every candidate without recording a selection.
+// Native route resolution may inspect more than one protocol group before it
+// knows which group will be relayed, so selection is recorded by the handler
+// only after the final group is chosen.
+func (lb *LoadBalancer) SortAllWithoutTracking(ctx context.Context, candidates []*ChannelModelsCandidate, model string, stream bool) []*ChannelModelsCandidate {
+	return lb.sortAll(ctx, candidates, model, stream, false)
+}
+
+func (lb *LoadBalancer) sortAll(
+	ctx context.Context,
+	candidates []*ChannelModelsCandidate,
+	model string,
+	stream bool,
+	trackSelection bool,
+) []*ChannelModelsCandidate {
 	if len(candidates) == 0 {
 		return candidates
 	}
 	if len(candidates) == 1 {
-		lb.TrackSelection(candidates[0])
+		if trackSelection {
+			lb.TrackSelection(candidates[0])
+		}
 		return candidates
 	}
 
@@ -197,10 +217,10 @@ func (lb *LoadBalancer) SortAll(ctx context.Context, candidates []*ChannelModels
 	ctx = contextWithRequestStream(ctx, stream)
 
 	if lb.debug || IsDebugEnabled(ctx) {
-		return lb.sortWithDebug(ctx, candidates, model, len(candidates), true)
+		return lb.sortWithDebug(ctx, candidates, model, len(candidates), trackSelection)
 	}
 
-	return lb.sortProduction(ctx, candidates, len(candidates), true)
+	return lb.sortProduction(ctx, candidates, len(candidates), trackSelection)
 }
 
 // SortWithoutTracking sorts candidates without recording a channel selection.

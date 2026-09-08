@@ -78,7 +78,9 @@ Enabled channels are filtered by exact `api_format`, endpoint path/transport,
 channel model entries, active API-key credentials, profile scope, and Doubao
 resource ID. `ModelProtocols` can explicitly force a format for a model. A
 shared Bailian path is rejected when more than one configured protocol remains
-possible; the relay never guesses from a model-name substring.
+possible. A single `model` query value may match an exact `ModelProtocols`
+entry only to disambiguate that path; it is never used for Profile
+authorization or guessed from a model-name substring.
 
 When a model is observable before routing, native selection accepts only an
 exact `SupportedModels` value. Channel model aliases, prefixes, automatic
@@ -87,9 +89,11 @@ applied to opaque native payloads. If a WebSocket model appears only in its
 first frame and the active Profile limits models, a candidate is eligible only
 when every directly configured channel model belongs to that Profile. This
 keeps the Profile boundary enforceable without inspecting a provider frame.
-For a generic WebSocket route, a `?model=` query is retained only for upstream
-relay and is never used as authoritative candidate or Profile authorization;
-selection stays opaque until the provider frame arrives.
+For a generic WebSocket route, a `?model=` query is retained for upstream
+relay. On a shared Bailian path it may also select an exact configured
+`ModelProtocols` protocol, but it is never authoritative for candidate model
+or Profile authorization; selection remains opaque until the provider frame
+arrives.
 
 The existing load-balancer ordering is reused after this filtering, without the
 ordinary LLM retry-policy `topK` truncation: native failover needs the complete

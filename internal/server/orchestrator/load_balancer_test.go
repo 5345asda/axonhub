@@ -741,6 +741,32 @@ func TestLoadBalancer_SortAllTracksFirstCandidate(t *testing.T) {
 	assert.Len(t, tracker.selections, 1)
 }
 
+func TestLoadBalancer_SortAllWithoutTrackingPreservesAllCandidates(t *testing.T) {
+	strategy := &channelBasedStrategy{
+		name:   "test",
+		scores: map[int]float64{1: 100, 2: 300, 3: 200},
+	}
+	tracker := &mockSelectionTracker{}
+	lb := NewLoadBalancer(
+		&mockRetryPolicyProvider{policy: &biz.RetryPolicy{Enabled: false}},
+		tracker,
+		strategy,
+	)
+	candidates := []*ChannelModelsCandidate{
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "ch1"}}},
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 2, Name: "ch2"}}},
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 3, Name: "ch3"}}},
+	}
+
+	result := lb.SortAllWithoutTracking(context.Background(), candidates, "", false)
+
+	require.Len(t, result, 3)
+	assert.Equal(t, 2, result[0].Channel.ID)
+	assert.Equal(t, 3, result[1].Channel.ID)
+	assert.Equal(t, 1, result[2].Channel.ID)
+	assert.Empty(t, tracker.selections)
+}
+
 func TestLoadBalancer_SortAllTracksSingleCandidate(t *testing.T) {
 	tracker := &mockSelectionTracker{}
 	lb := NewLoadBalancer(
