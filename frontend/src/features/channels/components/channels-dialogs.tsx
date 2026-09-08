@@ -49,6 +49,8 @@ export function ChannelsDialogs() {
     (!open || detailsQuery.isError || detailsQuery.data === partialCurrentRow)
       ? (detailsQuery.data ?? partialCurrentRow)
       : null;
+  const endpointRow =
+    detailsQuery.isSuccess && !detailsQuery.isFetching && detailsQuery.data?.id === partialCurrentRow?.id ? detailsQuery.data : null;
   return (
     <>
       <ChannelsSystemSettingsDialog />
@@ -305,19 +307,21 @@ export function ChannelsDialogs() {
             currentRow={currentRow}
           />
 
-          <ChannelsEndpointsDialog
-            key={`channel-endpoints-${currentRow.id}`}
-            open={open === 'endpoints'}
-            onOpenChange={(isOpen) => {
-              if (!isOpen) {
-                setOpen(null);
-                setTimeout(() => {
-                  setCurrentRow(null);
-                }, 500);
-              }
-            }}
-            channel={currentRow}
-          />
+          {endpointRow && (
+            <ChannelsEndpointsDialog
+              key={`channel-endpoints-${endpointRow.id}`}
+              open={open === 'endpoints'}
+              onOpenChange={(isOpen) => {
+                if (!isOpen) {
+                  setOpen(null);
+                  setTimeout(() => {
+                    setCurrentRow(null);
+                  }, 500);
+                }
+              }}
+              channel={endpointRow}
+            />
+          )}
 
           <ChannelsDisabledAPIKeysDialog
             key={`channel-disabled-api-keys-${currentRow.id}`}

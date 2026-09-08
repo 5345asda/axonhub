@@ -2,6 +2,7 @@ package biz
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/looplj/axonhub/internal/ent"
@@ -43,9 +44,15 @@ func ValidateEndpoints(endpoints []objects.ChannelEndpoint) error {
 		if ep.APIFormat == "" {
 			return fmt.Errorf("endpoint[%d]: api_format is required", i)
 		}
+		if strings.TrimSpace(ep.APIFormat) != ep.APIFormat {
+			return fmt.Errorf("endpoint[%d]: api_format must not contain leading or trailing whitespace", i)
+		}
 
-		if _, ok := SupportedAPIFormats[ep.APIFormat]; !ok {
-			return fmt.Errorf("endpoint[%d]: unsupported api_format %q", i, ep.APIFormat)
+		protocol, nativeVoice := objects.NativeVoiceProtocolByAPIFormat(ep.APIFormat)
+		if !nativeVoice {
+			if _, ok := SupportedAPIFormats[ep.APIFormat]; !ok {
+				return fmt.Errorf("endpoint[%d]: unsupported api_format %q", i, ep.APIFormat)
+			}
 		}
 
 		if seen[ep.APIFormat] {
@@ -56,6 +63,13 @@ func ValidateEndpoints(endpoints []objects.ChannelEndpoint) error {
 
 		if ep.Transport != "" && ep.Transport != objects.ChannelEndpointTransportHTTP && ep.Transport != objects.ChannelEndpointTransportWebSocket {
 			return fmt.Errorf("endpoint[%d]: unsupported transport %q", i, ep.Transport)
+		}
+
+		if nativeVoice {
+			if err := validateNativeVoiceEndpoint(i, ep, protocol); err != nil {
+				return err
+			}
+			continue
 		}
 
 		if endpointTransport(ep) == objects.ChannelEndpointTransportWebSocket && !supportsWebSocketTransport(ep.APIFormat) {
@@ -70,6 +84,38 @@ func ValidateEndpoints(endpoints []objects.ChannelEndpoint) error {
 			if !strings.HasPrefix(ep.Path, "/") {
 				return fmt.Errorf("endpoint[%d]: path must start with '/', got %q", i, ep.Path)
 			}
+		}
+	}
+
+	return nil
+}
+
+func validateNativeVoiceEndpoint(index int, endpoint objects.ChannelEndpoint, protocol objects.NativeVoiceProtocol) error {
+	if endpoint.Path != protocol.Path {
+		return fmt.Errorf("endpoint[%d]: native api_format %q requires path %q", index, endpoint.APIFormat, protocol.Path)
+	}
+
+	if objects.NativeVoiceEndpointTransport(endpoint) != protocol.Transport {
+		return fmt.Errorf("endpoint[%d]: native api_format %q requires transport %q", index, endpoint.APIFormat, protocol.Transport)
+	}
+
+	if protocol.AuthMode == objects.NativeVoiceAuthDoubaoV3 && strings.TrimSpace(endpoint.ResourceID) == "" {
+		return fmt.Errorf("endpoint[%d]: native api_format %q requires resource_id", index, endpoint.APIFormat)
+	}
+	if protocol.AuthMode != objects.NativeVoiceAuthDoubaoV3 && strings.TrimSpace(endpoint.ResourceID) != "" {
+		return fmt.Errorf("endpoint[%d]: resource_id is only supported by Doubao native endpoints", index)
+	}
+
+	if baseURL := strings.TrimSpace(endpoint.BaseURL); baseURL != "" {
+		parsed, err := url.Parse(baseURL)
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+			return fmt.Errorf("endpoint[%d]: invalid native base_url", index)
+		}
+		if parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("endpoint[%d]: native base_url must not include query or fragment", index)
+		}
+		if !objects.NativeVoiceProtocolAllowsBaseURLScheme(endpoint.APIFormat, parsed.Scheme) {
+			return fmt.Errorf("endpoint[%d]: invalid native base_url scheme %q for api_format %q", index, parsed.Scheme, endpoint.APIFormat)
 		}
 	}
 

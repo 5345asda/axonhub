@@ -30,6 +30,7 @@ import {
   channelEndpointSchema,
   configurableChannelEndpointApiFormats,
   configurableChannelEndpointApiFormatSchema,
+  nativeChannelEndpointDefaults,
 } from '../data/schema';
 
 interface Props {
@@ -121,6 +122,7 @@ function EndpointTable({
               <Badge variant='secondary' className='w-fit font-mono text-xs'>
                 {ep.apiFormat}
               </Badge>
+              {ep.resourceID && <span className='text-muted-foreground truncate font-mono text-[10px]'>resource: {ep.resourceID}</span>}
               {readOnly && index === 0 && (
                 <Badge variant='outline' className='text-[10px]'>
                   {t('channels.endpoints.primaryBadge')}
@@ -158,6 +160,7 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
   const [newApiFormat, setNewApiFormat] = useState('');
   const [newPath, setNewPath] = useState('');
   const [newBaseURL, setNewBaseURL] = useState('');
+  const [newResourceID, setNewResourceID] = useState('');
   const [modelProtocols, setModelProtocols] = useState<ModelProtocol[]>(() => channel.settings?.modelProtocols ?? []);
   const [newProtocolModel, setNewProtocolModel] = useState('');
   const [newProtocolFormats, setNewProtocolFormats] = useState<string[]>([]);
@@ -186,6 +189,7 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
     setNewApiFormat('');
     setNewPath('');
     setNewBaseURL('');
+    setNewResourceID('');
     setModelProtocols(channel.settings?.modelProtocols ?? []);
     setNewProtocolModel('');
     setNewProtocolFormats([]);
@@ -197,6 +201,14 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
   const usedApiFormats = useMemo(() => new Set(endpoints.map((ep) => ep.apiFormat)), [endpoints]);
 
   const availableApiFormats = useMemo(() => configurableChannelEndpointApiFormats.filter((f) => !usedApiFormats.has(f)), [usedApiFormats]);
+  const nativeEndpointDefaults = nativeChannelEndpointDefaults[newApiFormat];
+
+  const handleApiFormatChange = useCallback((apiFormat: string) => {
+    setNewApiFormat(apiFormat);
+    const defaults = nativeChannelEndpointDefaults[apiFormat];
+    setNewPath(defaults?.path ?? '');
+    setNewResourceID('');
+  }, []);
 
   const handleAddEndpoint = useCallback(() => {
     setError(null);
@@ -212,10 +224,17 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
       return;
     }
 
+    if (nativeEndpointDefaults?.requiresResourceID && !newResourceID.trim()) {
+      setError(t('channels.endpoints.resourceIDRequired'));
+      return;
+    }
+
     const parsed = channelEndpointSchema.safeParse({
       apiFormat: newApiFormat,
       path: newPath || undefined,
       baseURL: newBaseURL || undefined,
+      transport: nativeEndpointDefaults?.transport,
+      resourceID: newResourceID.trim() || undefined,
     });
     if (!parsed.success) {
       const firstIssue = parsed.error.issues[0];
@@ -231,7 +250,8 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
     setNewApiFormat('');
     setNewPath('');
     setNewBaseURL('');
-  }, [newApiFormat, newPath, newBaseURL, usedApiFormats, t]);
+    setNewResourceID('');
+  }, [nativeEndpointDefaults, newApiFormat, newBaseURL, newPath, newResourceID, t, usedApiFormats]);
 
   const handleRemoveEndpoint = useCallback((apiFormat: string) => {
     setEndpoints((prev) => prev.filter((ep) => ep.apiFormat !== apiFormat));
@@ -374,6 +394,7 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
             path: ep.path || undefined,
             baseURL: ep.baseURL || undefined,
             transport: ep.transport || undefined,
+            resourceID: ep.resourceID || undefined,
           })),
         },
         patch: { modelProtocols },
@@ -465,7 +486,7 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
                 <label htmlFor='endpoint-api-format' className='text-muted-foreground block text-xs'>
                   {t('channels.endpoints.apiFormat')}
                 </label>
-                <Select value={newApiFormat} onValueChange={setNewApiFormat}>
+                <Select value={newApiFormat} onValueChange={handleApiFormatChange}>
                   <SelectTrigger id='endpoint-api-format' className='w-full'>
                     <SelectValue placeholder={t('channels.endpoints.apiFormat')} />
                   </SelectTrigger>
@@ -488,7 +509,11 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
                 </label>
                 <Input
                   id='endpoint-base-url'
-                  placeholder={newApiFormat ? t('channels.endpoints.baseURLPlaceholder') : t('channels.endpoints.selectFormatFirst')}
+                  placeholder={
+                    newApiFormat
+                      ? t(nativeEndpointDefaults ? 'channels.endpoints.nativeBaseURLPlaceholder' : 'channels.endpoints.baseURLPlaceholder')
+                      : t('channels.endpoints.selectFormatFirst')
+                  }
                   value={newBaseURL}
                   onChange={(e) => setNewBaseURL(e.target.value)}
                   onKeyDown={handleKeyDown}
@@ -497,7 +522,7 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
                   className='disabled:opacity-50'
                 />
                 <p id='endpoint-base-url-hint' className='text-muted-foreground text-[11px] leading-4 break-words'>
-                  {t('channels.endpoints.baseURLHint')}
+                  {t(nativeEndpointDefaults ? 'channels.endpoints.nativeBaseURLHint' : 'channels.endpoints.baseURLHint')}
                 </p>
               </div>
               <div className='min-w-0 space-y-1'>
@@ -511,13 +536,28 @@ export function ChannelsEndpointsDialog({ channel, open, onOpenChange }: Props) 
                   onChange={(e) => setNewPath(e.target.value)}
                   onKeyDown={handleKeyDown}
                   disabled={!newApiFormat}
+                  readOnly={Boolean(nativeEndpointDefaults)}
                   aria-describedby='endpoint-path-hint'
-                  className='disabled:opacity-50'
+                  className='disabled:opacity-50 read-only:bg-muted'
                 />
                 <p id='endpoint-path-hint' className='text-muted-foreground text-[11px] leading-4 break-words'>
-                  {t('channels.endpoints.pathHint')}
+                  {t(nativeEndpointDefaults ? 'channels.endpoints.nativePathHint' : 'channels.endpoints.pathHint')}
                 </p>
               </div>
+              {nativeEndpointDefaults?.requiresResourceID && (
+                <div className='min-w-0 space-y-1 md:col-span-2'>
+                  <label htmlFor='endpoint-resource-id' className='text-muted-foreground block text-xs'>
+                    {t('channels.endpoints.resourceID')}
+                  </label>
+                  <Input
+                    id='endpoint-resource-id'
+                    value={newResourceID}
+                    onChange={(e) => setNewResourceID(e.target.value)}
+                    onKeyDown={handleKeyDown}
+                    placeholder={t('channels.endpoints.resourceIDPlaceholder')}
+                  />
+                </div>
+              )}
               <Button
                 type='button'
                 variant='default'

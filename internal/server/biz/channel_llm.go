@@ -179,6 +179,26 @@ func getAPIKeyProvider(ch *Channel) auth.APIKeyProvider {
 	panic(fmt.Errorf("no enabled api key configured for channel %s", ch.Name))
 }
 
+// SelectAPIKey applies the channel's existing key-selection policy for a raw
+// native relay request. Loaded channels keep trace-sticky behavior; direct
+// test channels fall back to their enabled credential list.
+func (ch *Channel) SelectAPIKey(ctx context.Context) string {
+	if ch == nil || ch.Channel == nil {
+		return ""
+	}
+
+	if len(ch.cachedEnabledAPIKeys) > 0 || ch.apiKeyOverride != "" {
+		return getAPIKeyProvider(ch).Get(ctx)
+	}
+
+	keys := ch.Credentials.GetEnabledAPIKeys(ch.DisabledAPIKeys)
+	if len(keys) == 0 {
+		return ""
+	}
+
+	return keys[0]
+}
+
 // BuildOutboundByAPIFormat returns the outbound transformer for a resolved endpoint API format.
 // If the channel does not support the format, returns an error.
 func BuildOutboundByAPIFormat(ch *Channel, apiFormat string) (transformer.Outbound, error) {
@@ -234,7 +254,7 @@ func (svc *ChannelService) buildChannelWithOutbounds(c *ent.Channel, apiKeyOverr
 	}
 
 	for _, ep := range userEndpoints {
-		if ep.APIFormat == "" {
+		if ep.APIFormat == "" || objects.IsNativeVoiceAPIFormat(ep.APIFormat) {
 			continue
 		}
 		out, err := svc.buildNonDefaultEndpointOutbound(c, ch, ep)

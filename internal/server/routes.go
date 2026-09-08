@@ -38,6 +38,7 @@ type Handlers struct {
 	RequestContent *api.RequestContentHandlers
 	OIDC           *api.OIDCHandlers
 	RequestPreview *api.RequestPreviewHandlers
+	NativeVoice    *api.NativeVoiceHandlers
 }
 
 type Services struct {
@@ -183,6 +184,8 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 	// single-request timeout from apiGroup.
 	responsesWebSocketGroup := server.Group("/", apiMiddlewares...)
 	responsesWebSocketGroup.GET("/v1/responses", handlers.OpenAI.CreateResponseWebSocket(server.Config.LLMRequestTimeout))
+	api.RegisterNativeVoiceHTTPRoutes(apiGroup, handlers.NativeVoice)
+	api.RegisterNativeVoiceWebSocketRoutes(responsesWebSocketGroup, handlers.NativeVoice)
 
 	{
 		openaiGroup := apiGroup.Group("/v1")

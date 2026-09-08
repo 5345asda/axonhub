@@ -1,12 +1,15 @@
 package orchestrator
 
 import (
+	"context"
 	"sync"
 	"time"
+
+	"github.com/looplj/axonhub/internal/server/biz"
 )
 
 // ChannelRequestTracker tracks per-channel request and token counts
-// within fixed natural-minute buckets for rate limiting.
+// within fixed natural-minute buckets for rate limiting and native load selection.
 // It also manages cooldown periods for channels that received 429 errors.
 type ChannelRequestTracker struct {
 	mu        sync.RWMutex
@@ -26,6 +29,21 @@ func NewChannelRequestTracker() *ChannelRequestTracker {
 		counters:  make(map[int]*rateLimitWindow),
 		cooldowns: make(map[int]time.Time),
 	}
+}
+
+// IncrementChannelSelection implements ChannelSelectionTracker.
+func (t *ChannelRequestTracker) IncrementChannelSelection(channelID int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.getOrResetWindow(channelID).requests++
+}
+
+// GetChannelMetrics implements ChannelMetricsProvider for native load tracking.
+func (t *ChannelRequestTracker) GetChannelMetrics(_ context.Context, channelID int) (*biz.AggregatedMetrics, error) {
+	metrics := &biz.AggregatedMetrics{}
+	metrics.RequestCount = t.GetRequestCount(channelID)
+	return metrics, nil
 }
 
 // getOrResetWindow returns the current window for a channel, resetting if expired.

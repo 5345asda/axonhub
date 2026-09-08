@@ -179,6 +179,30 @@ func (lb *LoadBalancer) Sort(ctx context.Context, candidates []*ChannelModelsCan
 	return lb.sort(ctx, candidates, model, stream, true)
 }
 
+// SortAll orders every candidate without applying the ordinary retry-policy
+// topK limit. Native relays need the complete ordered list because they may
+// fail over to any same-protocol channel before committing a response. The
+// first candidate still records a selection so weighted ordering remains
+// effective; native relays do not emit ordinary LLM performance records.
+func (lb *LoadBalancer) SortAll(ctx context.Context, candidates []*ChannelModelsCandidate, model string, stream bool) []*ChannelModelsCandidate {
+	if len(candidates) == 0 {
+		return candidates
+	}
+	if len(candidates) == 1 {
+		lb.TrackSelection(candidates[0])
+		return candidates
+	}
+
+	ctx = contextWithRequestedModel(ctx, model)
+	ctx = contextWithRequestStream(ctx, stream)
+
+	if lb.debug || IsDebugEnabled(ctx) {
+		return lb.sortWithDebug(ctx, candidates, model, len(candidates), true)
+	}
+
+	return lb.sortProduction(ctx, candidates, len(candidates), true)
+}
+
 // SortWithoutTracking sorts candidates without recording a channel selection.
 // It is used when a sticky candidate is already selected and the remaining
 // candidates are only fallbacks.
