@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -23,6 +24,36 @@ func TestChannelRequestTracker_TryAcquireRequestIncrementsCount(t *testing.T) {
 	assert.True(t, tracker.TryAcquireRequest(1, 10))
 
 	assert.Equal(t, int64(3), tracker.GetRequestCount(1))
+}
+
+func TestChannelRequestTracker_SelectionCountProvidesLoadMetrics(t *testing.T) {
+	tracker := NewChannelRequestTracker()
+
+	tracker.IncrementChannelSelection(1)
+	tracker.IncrementChannelSelection(1)
+
+	metrics, err := tracker.GetChannelMetrics(context.Background(), 1)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(2), metrics.RequestCount)
+}
+
+func TestChannelRequestTracker_SelectionCountResetsAtMinuteBoundary(t *testing.T) {
+	tracker := NewChannelRequestTracker()
+
+	tracker.mu.Lock()
+	tracker.counters[1] = &rateLimitWindow{
+		requests:    1001,
+		windowStart: time.Now().Truncate(time.Minute).Add(-time.Minute),
+	}
+	tracker.mu.Unlock()
+
+	tracker.IncrementChannelSelection(1)
+
+	metrics, err := tracker.GetChannelMetrics(context.Background(), 1)
+
+	assert.NoError(t, err)
+	assert.Equal(t, int64(1), metrics.RequestCount)
 }
 
 func TestChannelRequestTracker_TryAcquireRequestRejectsWhenLimitReached(t *testing.T) {

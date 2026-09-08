@@ -171,3 +171,25 @@ func TestBuildChannelWithOutbounds_OpenCodeCustomEndpointsCarrySessionHeader(t *
 	require.Implements(t, (*transformer.TransportRequestFinalizer)(nil), responsesOutbound)
 	require.Implements(t, (*stoppableOutbound)(nil), responsesOutbound)
 }
+
+func TestBuildChannelWithOutboundsSkipsNativeVoiceEndpoint(t *testing.T) {
+	client := enttest.NewEntClient(t, "sqlite3", "file:native_voice_endpoint?mode=memory&_fk=0")
+	t.Cleanup(func() { client.Close() })
+
+	protocol, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatMiniMaxT2A)
+	require.True(t, ok)
+	ch, err := NewChannelServiceForTest(client).buildChannelWithOutbounds(&ent.Channel{
+		ID:          1,
+		Name:        "MiniMax T2A",
+		Type:        channel.TypeMinimax,
+		BaseURL:     "https://api.minimaxi.com",
+		Credentials: objects.ChannelCredentials{APIKey: "test-key"},
+		Endpoints: []objects.ChannelEndpoint{{
+			APIFormat: protocol.APIFormat,
+			Path:      protocol.Path,
+		}},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, ch.Outbound)
+	require.NotContains(t, ch.Outbounds, protocol.APIFormat)
+}

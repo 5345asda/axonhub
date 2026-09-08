@@ -401,10 +401,11 @@ type ComplexityRoot struct {
 	}
 
 	ChannelEndpoint struct {
-		APIFormat func(childComplexity int) int
-		BaseURL   func(childComplexity int) int
-		Path      func(childComplexity int) int
-		Transport func(childComplexity int) int
+		APIFormat  func(childComplexity int) int
+		BaseURL    func(childComplexity int) int
+		Path       func(childComplexity int) int
+		ResourceID func(childComplexity int) int
+		Transport  func(childComplexity int) int
 	}
 
 	ChannelLimiterStats struct {
@@ -3758,6 +3759,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.ChannelEndpoint.Path(childComplexity), true
+	case "ChannelEndpoint.resourceID":
+		if e.complexity.ChannelEndpoint.ResourceID == nil {
+			break
+		}
+
+		return e.complexity.ChannelEndpoint.ResourceID(childComplexity), true
 	case "ChannelEndpoint.transport":
 		if e.complexity.ChannelEndpoint.Transport == nil {
 			break
@@ -20802,6 +20809,8 @@ func (ec *executionContext) fieldContext_Channel_endpoints(_ context.Context, fi
 				return ec.fieldContext_ChannelEndpoint_baseURL(ctx, field)
 			case "transport":
 				return ec.fieldContext_ChannelEndpoint_transport(ctx, field)
+			case "resourceID":
+				return ec.fieldContext_ChannelEndpoint_resourceID(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type ChannelEndpoint", field.Name)
 		},
@@ -21139,6 +21148,8 @@ func (ec *executionContext) fieldContext_Channel_defaultEndpoints(_ context.Cont
 				return ec.fieldContext_ChannelEndpoint_baseURL(ctx, field)
 			case "transport":
 				return ec.fieldContext_ChannelEndpoint_transport(ctx, field)
+			case "resourceID":
+				return ec.fieldContext_ChannelEndpoint_resourceID(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type ChannelEndpoint", field.Name)
 		},
@@ -21769,6 +21780,35 @@ func (ec *executionContext) _ChannelEndpoint_transport(ctx context.Context, fiel
 }
 
 func (ec *executionContext) fieldContext_ChannelEndpoint_transport(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChannelEndpoint",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChannelEndpoint_resourceID(ctx context.Context, field graphql.CollectedField, obj *objects.ChannelEndpoint) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_ChannelEndpoint_resourceID,
+		func(ctx context.Context) (any, error) {
+			return obj.ResourceID, nil
+		},
+		nil,
+		ec.marshalOString2string,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_ChannelEndpoint_resourceID(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "ChannelEndpoint",
 		Field:      field,
@@ -65915,7 +65955,7 @@ func (ec *executionContext) unmarshalInputChannelEndpointInput(ctx context.Conte
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"apiFormat", "path", "baseURL", "transport"}
+	fieldsInOrder := [...]string{"apiFormat", "path", "baseURL", "transport", "resourceID"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -65950,6 +65990,13 @@ func (ec *executionContext) unmarshalInputChannelEndpointInput(ctx context.Conte
 				return it, err
 			}
 			it.Transport = data
+		case "resourceID":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("resourceID"))
+			data, err := ec.unmarshalOString2string(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ResourceID = data
 		}
 	}
 
@@ -93348,6 +93395,8 @@ func (ec *executionContext) _ChannelEndpoint(ctx context.Context, sel ast.Select
 			out.Values[i] = ec._ChannelEndpoint_baseURL(ctx, field, obj)
 		case "transport":
 			out.Values[i] = ec._ChannelEndpoint_transport(ctx, field, obj)
+		case "resourceID":
+			out.Values[i] = ec._ChannelEndpoint_resourceID(ctx, field, obj)
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}

@@ -288,6 +288,44 @@ func TestValidateEndpoints(t *testing.T) {
 		require.NoError(t, ValidateEndpoints([]objects.ChannelEndpoint{{APIFormat: format}}))
 	})
 
+	t.Run("existing MiniMax T2A endpoint passes native validation", func(t *testing.T) {
+		err := ValidateEndpoints([]objects.ChannelEndpoint{{
+			APIFormat: objects.NativeVoiceAPIFormatMiniMaxT2A,
+			Path:      "/v1/t2a_v2",
+		}})
+		require.NoError(t, err)
+	})
+
+	t.Run("native api format rejects surrounding whitespace", func(t *testing.T) {
+		err := ValidateEndpoints([]objects.ChannelEndpoint{{
+			APIFormat: " " + objects.NativeVoiceAPIFormatMiniMaxT2A + " ",
+			Path:      "/v1/t2a_v2",
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "leading or trailing whitespace")
+	})
+
+	t.Run("native endpoint rejects a guessed path or transport", func(t *testing.T) {
+		err := ValidateEndpoints([]objects.ChannelEndpoint{{
+			APIFormat: objects.NativeVoiceAPIFormatMiniMaxT2ABidi,
+			Path:      "/v1/t2a_v2",
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "requires path")
+	})
+
+	t.Run("Doubao native endpoint requires configured resource ID", func(t *testing.T) {
+		protocol, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatDoubaoTTSBidi)
+		require.True(t, ok)
+		err := ValidateEndpoints([]objects.ChannelEndpoint{{
+			APIFormat: protocol.APIFormat,
+			Path:      protocol.Path,
+			Transport: protocol.Transport,
+		}})
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "requires resource_id")
+	})
+
 	t.Run("empty endpoints list passes validation", func(t *testing.T) {
 		err := ValidateEndpoints(nil)
 		require.NoError(t, err)

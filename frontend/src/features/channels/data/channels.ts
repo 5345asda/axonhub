@@ -15,7 +15,6 @@ import {
   UpdateChannelInput,
   channelConnectionSchema,
   channelSchema,
-  channelEndpointsResponseSchema,
   BulkImportChannelsInput,
   BulkImportChannelsResult,
   bulkImportChannelsResultSchema,
@@ -139,12 +138,14 @@ const CREATE_CHANNEL_MUTATION = `
         path
         baseURL
         transport
+        resourceID
       }
       endpoints {
         apiFormat
         path
         baseURL
         transport
+        resourceID
       }
     }
   }
@@ -221,12 +222,14 @@ const DUPLICATE_CHANNEL_MUTATION = `
         path
         baseURL
         transport
+        resourceID
       }
       endpoints {
         apiFormat
         path
         baseURL
         transport
+        resourceID
       }
     }
   }
@@ -303,12 +306,14 @@ const BULK_CREATE_CHANNELS_MUTATION = `
         path
         baseURL
         transport
+        resourceID
       }
       endpoints {
         apiFormat
         path
         baseURL
         transport
+        resourceID
       }
     }
   }
@@ -386,12 +391,14 @@ const UPDATE_CHANNEL_MUTATION = `
         path
         baseURL
         transport
+        resourceID
       }
       endpoints {
         apiFormat
         path
         baseURL
         transport
+        resourceID
       }
     }
   }
@@ -439,28 +446,6 @@ const DELETE_CHANNEL_MUTATION = `
 const BULK_DELETE_CHANNELS_MUTATION = `
   mutation BulkDeleteChannels($ids: [ID!]!) {
     bulkDeleteChannels(ids: $ids)
-  }
-`;
-
-const SAVE_CHANNEL_ENDPOINTS_MUTATION = `
-  mutation SaveChannelEndpoints($input: SaveChannelEndpointsInput!) {
-    saveChannelEndpoints(input: $input) {
-      id
-      type
-      name
-      defaultEndpoints {
-        apiFormat
-        path
-        baseURL
-        transport
-      }
-      endpoints {
-        apiFormat
-        path
-        baseURL
-        transport
-      }
-    }
   }
 `;
 
@@ -531,12 +516,14 @@ const BULK_IMPORT_CHANNELS_MUTATION = `
           path
           baseURL
           transport
+          resourceID
         }
         endpoints {
           apiFormat
           path
           baseURL
           transport
+          resourceID
         }
         settings {
           extraModelPrefix
@@ -769,12 +756,14 @@ const BULK_UPDATE_CHANNEL_ORDERING_MUTATION = `
           path
           baseURL
           transport
+          resourceID
         }
         endpoints {
           apiFormat
           path
           baseURL
           transport
+          resourceID
         }
         settings {
           extraModelPrefix
@@ -833,6 +822,7 @@ const ALL_CHANNEL_SUMMARYS_QUERY = `
         path
         baseURL
         transport
+        resourceID
       }
       allModelEntries {
         requestModel
@@ -998,12 +988,14 @@ const CHANNEL_QUERY_FULL_NODE_SELECTION = `
             path
             baseURL
             transport
+            resourceID
           }
           endpoints {
             apiFormat
             path
             baseURL
             transport
+            resourceID
           }
           disabledAPIKeys {
             key
@@ -1467,32 +1459,6 @@ export function useUpdateChannelSettings() {
       queryClient.invalidateQueries({ queryKey: ['channels'] });
       queryClient.invalidateQueries({ queryKey: ['channel', data.id] });
       queryClient.invalidateQueries({ queryKey: ['provider-quotas'] });
-    },
-    onError: (error) => {
-      handleError(error, { context: t('channels.dialogs.edit.title') });
-    },
-  });
-}
-
-export interface SaveChannelEndpointsInput {
-  channelID: string;
-  endpoints: Array<{ apiFormat: string; path?: string; baseURL?: string; transport?: string }>;
-}
-
-export function useSaveChannelEndpoints() {
-  const queryClient = useQueryClient();
-  const { t } = useTranslation();
-  const { handleError } = useErrorHandler();
-
-  return useMutation({
-    mutationFn: async (input: SaveChannelEndpointsInput) => {
-      const data = await graphqlRequest<{ saveChannelEndpoints: Channel }>(SAVE_CHANNEL_ENDPOINTS_MUTATION, { input });
-      return channelEndpointsResponseSchema.parse(data.saveChannelEndpoints);
-    },
-    onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({ queryKey: ['channels'] });
-      queryClient.invalidateQueries({ queryKey: ['channel', variables.channelID] });
-      toast.success(t('channels.messages.updateSuccess'));
     },
     onError: (error) => {
       handleError(error, { context: t('channels.dialogs.edit.title') });
