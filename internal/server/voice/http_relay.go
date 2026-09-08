@@ -245,7 +245,7 @@ func isNativeHTTPRelayResponseHopByHopHeader(key string) bool {
 func nativeHTTPConnectionHeaderNames(headers http.Header) map[string]struct{} {
 	result := make(map[string]struct{})
 	for _, value := range headers.Values("Connection") {
-		for _, name := range strings.Split(value, ",") {
+		for name := range strings.SplitSeq(value, ",") {
 			if canonical := http.CanonicalHeaderKey(strings.TrimSpace(name)); canonical != "" {
 				result[canonical] = struct{}{}
 			}
@@ -425,7 +425,7 @@ func inspectNativeHTTPStreamingBusinessStatus(resp *http.Response) error {
 	original := resp.Body
 	var rawPrefix bytes.Buffer
 	rawReader := io.TeeReader(original, &rawPrefix)
-	inspectionReader := io.Reader(rawReader)
+	inspectionReader := rawReader
 	var gzipReader *gzip.Reader
 	if nativeHTTPContentEncodingIsGzip(resp.Header.Get("Content-Encoding")) {
 		var err error
@@ -535,7 +535,10 @@ func inspectNativeHTTPBusinessPayload(body []byte, sse bool) error {
 	}
 
 	var payload nativeHTTPBusinessPayload
-	if err := json.Unmarshal(data, &payload); err != nil || payload.BaseResp == nil || payload.BaseResp.StatusCode == 0 {
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil
+	}
+	if payload.BaseResp == nil || payload.BaseResp.StatusCode == 0 {
 		return nil
 	}
 	return fmt.Errorf("native voice business failure: status_code=%d status_msg=%s", payload.BaseResp.StatusCode, payload.BaseResp.StatusMsg)
@@ -563,6 +566,7 @@ func nativeHTTPSSEData(event []byte) []byte {
 
 type nativeHTTPReadCloser struct {
 	io.Reader
+
 	Closer io.Closer
 }
 

@@ -18,8 +18,9 @@ const (
 	NativeVoiceAPIFormatBailianTTS          = "bailian/tts"
 	NativeVoiceAPIFormatBailianMultimodal   = "bailian/multimodal_generation"
 
+	// NativeVoiceAPIFormatMiniMaxT2A is the persisted MiniMax HTTP T2A format.
 	// Keep this value unchanged: it is already persisted on production MiniMax
-	// channels and is the legacy HTTP T2A endpoint.
+	// channels.
 	NativeVoiceAPIFormatMiniMaxT2A     = "minimax/t2a_v2"
 	NativeVoiceAPIFormatMiniMaxT2AWS   = "minimax/t2a_v2_ws"
 	NativeVoiceAPIFormatMiniMaxT2ABidi = "minimax/t2a_v2_bidi"

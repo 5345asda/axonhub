@@ -49,8 +49,7 @@ func (e *NativeRelayAdmissionError) Unwrap() error {
 // can embed provider URLs or response details, so they must not cross the
 // AxonHub2 boundary.
 func nativeRelayPublicError(err error) error {
-	var admissionErr *NativeRelayAdmissionError
-	if errors.As(err, &admissionErr) {
+	if _, ok := errors.AsType[*NativeRelayAdmissionError](err); ok {
 		return err
 	}
 	return errNativeRelayUpstream

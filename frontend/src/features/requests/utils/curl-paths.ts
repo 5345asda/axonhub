@@ -14,6 +14,7 @@ const API_FORMAT_PATHS: Record<string, string> = {
   'openai/audio_speech': '/v1/audio/speech',
   'openai/audio_transcriptions': '/v1/audio/transcriptions',
   'openai/audio_translations': '/v1/audio/translations',
+  'minimax/t2a_v2': '/v1/t2a_v2',
   'anthropic/messages': '/v1/messages',
   'gemini/contents': '/v1beta/models/{model}:generateContent',
   'aisdk/text': '/api/chat',

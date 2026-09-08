@@ -15,6 +15,10 @@ test('uses the Seedance task endpoint for generated cURL', () => {
   assert.equal(getApiPath('seedance/video'), '/api/v3/contents/generations/tasks');
 });
 
+test('uses the native MiniMax T2A endpoint for generated cURL', () => {
+  assert.equal(getApiPath('minimax/t2a_v2'), '/v1/t2a_v2');
+});
+
 test('shell-escapes model-derived URLs in generated cURL', () => {
   assert.equal(
     escapeShellValue("https://example.com/models/a'b:generateContent"),

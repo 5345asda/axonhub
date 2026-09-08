@@ -131,8 +131,7 @@ func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector
 }
 
 func nativeVoiceErrorStatus(err error) int {
-	var admissionErr *voice.NativeRelayAdmissionError
-	if errors.As(err, &admissionErr) && admissionErr.StatusCode > 0 {
+	if admissionErr, ok := errors.AsType[*voice.NativeRelayAdmissionError](err); ok && admissionErr.StatusCode > 0 {
 		return admissionErr.StatusCode
 	}
 	return http.StatusBadGateway
@@ -283,7 +282,7 @@ func extractNativeVoiceRequestModel(req *http.Request, protocols []objects.Nativ
 
 func nativeVoiceJSONModelAtPath(payload any, fieldPath string) (string, bool, error) {
 	value := payload
-	for _, field := range strings.Split(fieldPath, ".") {
+	for field := range strings.SplitSeq(fieldPath, ".") {
 		object, ok := value.(map[string]any)
 		if !ok {
 			return "", false, nil
@@ -306,6 +305,7 @@ func nativeVoiceJSONModelAtPath(payload any, fieldPath string) (string, bool, er
 
 type nativeVoiceRequestBody struct {
 	io.Reader
+
 	Closer io.Closer
 }
 
