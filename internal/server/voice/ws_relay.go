@@ -61,15 +61,25 @@ func (r *NativeWebSocketRelay) Relay(ctx context.Context, w http.ResponseWriter,
 			lastErr = errors.New("native websocket relay target is missing channel")
 			continue
 		}
-		slot, admissionErr := r.admission.acquire(ctx, target.Channel)
-		if admissionErr != nil {
-			lastErr = fmt.Errorf("native voice channel admission failed: %w", admissionErr)
-			continue
-		}
 		attemptID++
 		attemptStarted := time.Now()
-		conn, response, attemptURL, attemptHeaders, err := r.dialUpstream(ctx, inbound, target)
+		attemptURL, attemptHeaders, buildErr := nativeWebSocketDialRequest(ctx, inbound, target)
 		notifyNativeRelayAttempt(ctx, NativeRelayAttempt{ID: attemptID, ChannelID: target.Channel.ID, URL: attemptURL, RequestHeaders: attemptHeaders, StartedAt: attemptStarted})
+		if buildErr != nil {
+			notifyNativeRelayResult(ctx, NativeRelayResult{ID: attemptID, Err: buildErr, Duration: time.Since(attemptStarted)})
+			lastErr = buildErr
+			continue
+		}
+
+		slot, admissionErr := r.admission.acquire(ctx, target.Channel)
+		if admissionErr != nil {
+			attemptErr := fmt.Errorf("native voice channel admission failed: %w", admissionErr)
+			notifyNativeRelayResult(ctx, NativeRelayResult{ID: attemptID, Err: attemptErr, Duration: time.Since(attemptStarted)})
+			lastErr = attemptErr
+			continue
+		}
+
+		conn, response, err := r.dialUpstream(ctx, target, attemptURL, attemptHeaders)
 		if err != nil {
 			slot.release()
 			lastErr = err
@@ -136,24 +146,15 @@ func (r *NativeWebSocketRelay) Relay(ctx context.Context, w http.ResponseWriter,
 	return nil
 }
 
-func (r *NativeWebSocketRelay) dialUpstream(ctx context.Context, inbound *http.Request, target NativeRelayTarget) (*websocket.Conn, *http.Response, string, http.Header, error) {
-	if inbound == nil || inbound.URL == nil {
-		return nil, nil, "", nil, errors.New("native websocket relay request URL is required")
-	}
-
-	upstreamURL, requestHeader, err := nativeWebSocketDialRequest(ctx, inbound, target)
-	if err != nil {
-		return nil, nil, "", nil, err
-	}
-
+func (r *NativeWebSocketRelay) dialUpstream(ctx context.Context, target NativeRelayTarget, upstreamURL string, requestHeader http.Header) (*websocket.Conn, *http.Response, error) {
 	dialer := r.dialerForTarget(target)
 	conn, resp, err := dialer.DialContext(ctx, upstreamURL, requestHeader)
 	if err != nil {
 		r.admission.observeHTTPResponse(target.Channel, resp)
-		return nil, resp, upstreamURL, requestHeader, fmt.Errorf("failed to dial native websocket upstream: %w", err)
+		return nil, resp, fmt.Errorf("failed to dial native websocket upstream: %w", err)
 	}
 
-	return conn, nil, upstreamURL, requestHeader, nil
+	return conn, nil, nil
 }
 
 func nativeWebSocketDialRequest(ctx context.Context, inbound *http.Request, target NativeRelayTarget) (string, http.Header, error) {

@@ -97,23 +97,25 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 			lastErr = errors.New("native voice relay target is missing channel")
 			continue
 		}
-		slot, admissionErr := r.admission.acquire(ctx, target.Channel)
-		if admissionErr != nil {
-			lastErr = fmt.Errorf("native voice channel admission failed: %w", admissionErr)
-			continue
-		}
-
-		client := nativeHTTPClientForChannel(target.Channel)
+		nativeAttemptID++
+		attemptStartedAt := time.Now()
 
 		outboundReq, buildErr := r.buildNativeHTTPRelayRequest(ctx, inbound, body, target)
 		if buildErr != nil {
-			slot.release()
+			notifyNativeRelayAttempt(ctx, NativeRelayAttempt{
+				ID:        nativeAttemptID,
+				ChannelID: target.Channel.ID,
+				StartedAt: attemptStartedAt,
+			})
+			notifyNativeRelayResult(ctx, NativeRelayResult{
+				ID:       nativeAttemptID,
+				Err:      buildErr,
+				Duration: time.Since(attemptStartedAt),
+			})
 			lastErr = buildErr
 			continue
 		}
 
-		nativeAttemptID++
-		attemptStartedAt := time.Now()
 		notifyNativeRelayAttempt(ctx, NativeRelayAttempt{
 			ID:             nativeAttemptID,
 			ChannelID:      target.Channel.ID,
@@ -121,6 +123,20 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 			RequestHeaders: outboundReq.Header.Clone(),
 			StartedAt:      attemptStartedAt,
 		})
+
+		slot, admissionErr := r.admission.acquire(ctx, target.Channel)
+		if admissionErr != nil {
+			attemptErr := fmt.Errorf("native voice channel admission failed: %w", admissionErr)
+			notifyNativeRelayResult(ctx, NativeRelayResult{
+				ID:       nativeAttemptID,
+				Err:      attemptErr,
+				Duration: time.Since(attemptStartedAt),
+			})
+			lastErr = attemptErr
+			continue
+		}
+
+		client := nativeHTTPClientForChannel(target.Channel)
 
 		resp, respErr := client.Do(outboundReq)
 		if respErr != nil {

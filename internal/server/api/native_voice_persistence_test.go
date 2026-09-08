@@ -23,6 +23,7 @@ import (
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xcache"
 	"github.com/looplj/axonhub/internal/server/biz"
+	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/internal/server/voice"
 )
 
@@ -151,6 +152,59 @@ func TestServeNativeVoiceHTTPPersistsTransportFailure(t *testing.T) {
 	require.Len(t, executions, 1)
 	require.Equal(t, entrequestexecution.StatusFailed, executions[0].Status)
 	require.Equal(t, channelRow.ID, executions[0].ChannelID)
+}
+
+func TestServeNativeVoiceHTTPPersistsAdmissionRejectedCandidate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := ent.NewContext(authz.WithTestBypass(context.Background()), enttest.NewEntClient(t, "sqlite3", "file:native_voice_persistence_admission?mode=memory&_fk=0"))
+	client := ent.FromContext(ctx)
+	t.Cleanup(func() { _ = client.Close() })
+
+	protocol, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatMiniMaxT2A)
+	require.True(t, ok)
+	rpm := int64(1)
+	channelRow, err := client.Channel.Create().
+		SetName("native voice admission").
+		SetType(channel.TypeMinimax).
+		SetStatus(channel.StatusEnabled).
+		SetBaseURL("http://127.0.0.1:1").
+		SetSupportedModels([]string{"speech-2.8-hd"}).
+		SetDefaultTestModel("speech-2.8-hd").
+		SetSettings(&objects.ChannelSettings{RateLimit: &objects.ChannelRateLimit{RPM: &rpm}}).
+		SetCredentials(objects.ChannelCredentials{APIKey: "provider-key"}).
+		SetEndpoints([]objects.ChannelEndpoint{{
+			APIFormat: protocol.APIFormat,
+			Path:      protocol.Path,
+			BaseURL:   "http://127.0.0.1:1",
+			Transport: protocol.Transport,
+		}}).
+		Save(ctx)
+	require.NoError(t, err)
+
+	tracker := orchestrator.NewChannelRequestTracker()
+	require.True(t, tracker.TryAcquireRequest(channelRow.ID, rpm))
+	requestService := newNativeVoicePersistenceRequestService(t, client)
+	selector := voice.NewCandidateSelector(func() []*biz.Channel {
+		return []*biz.Channel{{Channel: channelRow}}
+	}, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd","text":"hello"}`)).WithContext(ctx)
+
+	serveNativeVoiceHTTP(c, selector, nil, voice.NewNativeHTTPRelay(voice.NewNativeRelayAdmission(nil, tracker)), requestService)
+
+	require.Equal(t, http.StatusTooManyRequests, w.Code)
+	requests, err := client.Request.Query().All(ctx)
+	require.NoError(t, err)
+	require.Len(t, requests, 1)
+	require.Equal(t, entrequest.StatusFailed, requests[0].Status)
+
+	executions, err := client.RequestExecution.Query().All(ctx)
+	require.NoError(t, err)
+	require.Len(t, executions, 1)
+	require.Equal(t, channelRow.ID, executions[0].ChannelID)
+	require.Equal(t, entrequestexecution.StatusFailed, executions[0].Status)
+	require.Contains(t, executions[0].ErrorMessage, "local rpm limit")
 }
 
 func TestServeNativeVoiceHTTPWritesBeforePersistingExecutions(t *testing.T) {

@@ -17,6 +17,7 @@ import (
 	"github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/server/biz"
+	"github.com/looplj/axonhub/internal/server/orchestrator"
 )
 
 func TestNativeWebSocketRelayFailsOverBeforeDownstreamUpgrade(t *testing.T) {
@@ -160,6 +161,30 @@ func TestNativeWebSocketRelayReportsEachFailedHandshakeOnce(t *testing.T) {
 	require.False(t, observer.results[0].Committed)
 	require.Equal(t, http.StatusUnauthorized, observer.results[1].StatusCode)
 	require.True(t, observer.results[1].Committed)
+}
+
+func TestNativeWebSocketRelayReportsAdmissionRejectedCandidate(t *testing.T) {
+	rpm := int64(1)
+	target := nativeWebSocketTestTarget(t, "http://127.0.0.1:1", objects.NativeVoiceAPIFormatMiniMaxT2ABidi, 1)
+	target.Channel.Settings = &objects.ChannelSettings{RateLimit: &objects.ChannelRateLimit{RPM: &rpm}}
+	tracker := orchestrator.NewChannelRequestTracker()
+	require.True(t, tracker.TryAcquireRequest(target.Channel.ID, rpm))
+
+	observer := &nativeRelayObserverCapture{}
+	inbound := httptest.NewRequest(http.MethodGet, "http://axonhub.test/ws/v1/t2a_v2_bidi", nil)
+	inbound.Header.Set("Connection", "Upgrade")
+	inbound.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+
+	err := NewNativeWebSocketRelay(NewNativeRelayAdmission(nil, tracker)).Relay(WithNativeRelayObserver(context.Background(), observer), w, inbound, []NativeRelayTarget{target})
+
+	var admissionErr *NativeRelayAdmissionError
+	require.ErrorAs(t, err, &admissionErr)
+	require.Equal(t, http.StatusTooManyRequests, admissionErr.StatusCode)
+	require.Len(t, observer.attempts, 1)
+	require.Len(t, observer.results, 1)
+	require.Equal(t, 1, observer.attempts[0].ID)
+	require.ErrorContains(t, observer.results[0].Err, "local rpm limit")
 }
 
 func TestNativeWebSocketRelayPreservesHandshakeResponseAfterTransportFailure(t *testing.T) {

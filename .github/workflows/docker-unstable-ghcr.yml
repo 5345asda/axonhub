@@ -1,0 +1,103 @@
+name: Publish immutable AxonHub image (unstable)
+
+on:
+  push:
+    branches:
+      - unstable
+  workflow_dispatch:
+
+concurrency:
+  group: unstable-ghcr-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/axonhub
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the exact commit
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: true
+
+      - name: Run backend tests
+        run: go test ./... -count=1
+
+      - name: Set immutable build version
+        shell: bash
+        run: |
+          printf 'unstable-%s\n' "${GITHUB_SHA:0:12}" > internal/build/VERSION
+          printf 'IMAGE_VERSION=unstable-%s\n' "${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish immutable image
+        id: image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.IMAGE_VERSION }}
+          provenance: false
+          sbom: false
+
+      - name: Record image digest
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          test -n "$DIGEST"
+          printf 'image=%s@%s\n' "${IMAGE}" "$DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          printf 'revision=%s\n' "$GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run isolated image smoke test
+        env:
+          IMAGE_REF: ${{ env.IMAGE }}@${{ steps.image.outputs.digest }}
+        shell: bash
+        run: |
+          set -eu
+          name="axonhub-unstable-smoke-${GITHUB_RUN_ID}"
+          cleanup() {
+            docker logs "$name" 2>&1 || true
+            docker rm -f "$name" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+
+          docker pull "$IMAGE_REF"
+          docker run -d --name "$name" \
+            -p 127.0.0.1:28090:8090 \
+            -e AXONHUB_DB_DIALECT=sqlite3 \
+            -e 'AXONHUB_DB_DSN=file:/tmp/axonhub-unstable-smoke.db?cache=shared&_fk=1&_pragma=journal_mode(WAL)' \
+            "$IMAGE_REF" >/dev/null
+
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent --show-error http://127.0.0.1:28090/health >/dev/null; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo 'immutable AxonHub image did not become healthy' >&2
+          exit 1
