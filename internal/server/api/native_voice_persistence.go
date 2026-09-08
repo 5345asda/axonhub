@@ -172,7 +172,7 @@ func (r *nativeVoiceRequestRecorder) finish(ctx context.Context, relayErr error)
 	}
 
 	final, hasFinal := results[finalID]
-	failed := relayErr != nil || finalID == 0 || !hasFinal || final.Err != nil || final.StatusCode >= http.StatusBadRequest
+	failed := relayErr != nil || (hasFinal && (final.Err != nil || final.StatusCode >= http.StatusBadRequest))
 	if failed {
 		if relayErr != nil {
 			err = r.requestService.UpdateRequestStatusFromError(persistCtx, request.ID, relayErr)
@@ -183,6 +183,9 @@ func (r *nativeVoiceRequestRecorder) finish(ctx context.Context, relayErr error)
 			log.Warn(ctx, "failed to persist native voice request failure", log.Cause(err), log.Int("request_id", request.ID))
 		}
 		return
+	}
+	if !hasFinal {
+		final.StatusCode = http.StatusOK
 	}
 
 	if err := r.requestService.UpdateRequestCompleted(persistCtx, request.ID, "", newNativeVoiceResponseMetadata(final.StatusCode, final.ResponseHeaders, final.ResponseBytes), nativeVoiceLatencyMetrics(time.Since(r.startedAt))); err != nil {
