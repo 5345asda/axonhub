@@ -261,6 +261,25 @@ func TestNativeVoicePersistedErrorStripsURLCredentialsAndQuery(t *testing.T) {
 	require.Equal(t, "dial https://provider.test/v1/t2a_v2 failed", message)
 }
 
+func TestNativeVoiceRecorderFailsWithoutFinalRelayResult(t *testing.T) {
+	ctx := ent.NewContext(authz.WithTestBypass(context.Background()), enttest.NewEntClient(t, "sqlite3", "file:native_voice_persistence_missing_result?mode=memory&_fk=0"))
+	client := ent.FromContext(ctx)
+	t.Cleanup(func() { _ = client.Close() })
+
+	requestService := newNativeVoicePersistenceRequestService(t, client)
+	request := httptest.NewRequest(http.MethodPost, "/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd"}`)).WithContext(ctx)
+	protocol, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatMiniMaxT2A)
+	require.True(t, ok)
+	recorder := newNativeVoiceRequestRecorder(requestService, protocol, "speech-2.8-hd", false, request, []byte(`{"model":"speech-2.8-hd"}`), time.Now())
+	require.NotNil(t, recorder)
+
+	recorder.finish(ctx, nil)
+
+	stored, err := client.Request.Query().Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, entrequest.StatusFailed, stored.Status)
+}
+
 func newNativeVoicePersistenceRequestService(t *testing.T, client *ent.Client) *biz.RequestService {
 	t.Helper()
 
