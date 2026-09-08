@@ -535,13 +535,10 @@ func inspectNativeHTTPBusinessPayload(body []byte, sse bool) error {
 	}
 
 	var payload nativeHTTPBusinessPayload
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil
+	if json.Unmarshal(data, &payload) == nil && payload.BaseResp != nil && payload.BaseResp.StatusCode != 0 {
+		return fmt.Errorf("native voice business failure: status_code=%d status_msg=%s", payload.BaseResp.StatusCode, payload.BaseResp.StatusMsg)
 	}
-	if payload.BaseResp == nil || payload.BaseResp.StatusCode == 0 {
-		return nil
-	}
-	return fmt.Errorf("native voice business failure: status_code=%d status_msg=%s", payload.BaseResp.StatusCode, payload.BaseResp.StatusMsg)
+	return nil
 }
 
 func nativeHTTPSSEData(event []byte) []byte {
