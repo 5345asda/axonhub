@@ -243,11 +243,12 @@ func TestNativeVoicePersistenceMasksLegacyProviderCredentials(t *testing.T) {
 		"X-Api-Access-Key":       {"access-key"},
 		"X-Api-Resource-Id":      {"resource-id"},
 		"X-Api-Connect-Id":       {"connect-id"},
+		"WWW-Authenticate":       {`Bearer realm="provider"`},
 		"X-Non-Sensitive-Header": {"keep"},
 		"x-api-app-key":          {"lowercase-app-key"},
 	})
 
-	for _, key := range []string{"Authorization", "X-Api-App-Key", "X-Api-Access-Key", "X-Api-Resource-Id", "X-Api-Connect-Id"} {
+	for _, key := range []string{"Authorization", "X-Api-App-Key", "X-Api-Access-Key", "X-Api-Resource-Id", "X-Api-Connect-Id", "WWW-Authenticate"} {
 		require.Equal(t, "******", headers.Get(key), key)
 	}
 	require.Len(t, headers.Values("X-Api-App-Key"), 1)
