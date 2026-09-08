@@ -92,7 +92,7 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 		lastResponse    *nativeHTTPResponseSnapshot
 		nativeAttemptID int
 	)
-	for index, target := range targets {
+	for _, target := range targets {
 		if target.Channel == nil {
 			lastErr = errors.New("native voice relay target is missing channel")
 			continue
@@ -116,7 +116,7 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 		attemptStartedAt := time.Now()
 		notifyNativeRelayAttempt(ctx, NativeRelayAttempt{
 			ID:             nativeAttemptID,
-			Target:         target,
+			ChannelID:      target.Channel.ID,
 			URL:            outboundReq.URL.String(),
 			RequestHeaders: outboundReq.Header.Clone(),
 			StartedAt:      attemptStartedAt,
@@ -135,7 +135,6 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 				StatusCode:      statusCode,
 				ResponseHeaders: responseHeaders,
 				Err:             respErr,
-				Retry:           index < len(targets)-1,
 				Duration:        time.Since(attemptStartedAt),
 			})
 			if resp != nil && resp.Body != nil {
@@ -155,7 +154,6 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 					StatusCode:      resp.StatusCode,
 					ResponseHeaders: resp.Header.Clone(),
 					Err:             attemptErr,
-					Retry:           index < len(targets)-1,
 					Duration:        time.Since(attemptStartedAt),
 				})
 				if resp.Body != nil {
@@ -167,7 +165,7 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 			}
 			response := captureNativeHTTPResponse(resp, nativeAttemptID, attemptStartedAt, attemptErr)
 			if lastResponse != nil {
-				notifyNativeRelayResult(ctx, lastResponse.result(true, false, lastResponse.attempt.ResponseBytes, nil))
+				notifyNativeRelayResult(ctx, lastResponse.result(false, lastResponse.attempt.ResponseBytes, nil))
 				lastResponse.close()
 			}
 			lastResponse = response
@@ -194,7 +192,6 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 				ResponseHeaders: resp.Header.Clone(),
 				ResponseBytes:   responseBytes,
 				Err:             writeErr,
-				Retry:           index < len(targets)-1,
 				Duration:        time.Since(attemptStartedAt),
 			})
 			lastErr = writeErr
@@ -202,7 +199,7 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 		}
 
 		if lastResponse != nil {
-			notifyNativeRelayResult(ctx, lastResponse.result(true, false, lastResponse.attempt.ResponseBytes, nil))
+			notifyNativeRelayResult(ctx, lastResponse.result(false, lastResponse.attempt.ResponseBytes, nil))
 			lastResponse.close()
 			lastResponse = nil
 		}
@@ -223,7 +220,7 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 
 	if lastResponse != nil {
 		committed, responseBytes, writeErr := lastResponse.writeTo(w)
-		result := lastResponse.result(false, committed, responseBytes, writeErr)
+		result := lastResponse.result(committed, responseBytes, writeErr)
 		lastResponse.close()
 		notifyNativeRelayResult(ctx, result)
 		if writeErr != nil {
@@ -388,8 +385,11 @@ func classifyNativeHTTPResponse(resp *http.Response, target NativeRelayTarget, s
 		resp.Body = io.NopCloser(strings.NewReader(""))
 	}
 
-	if resp.StatusCode >= http.StatusBadRequest && httpclient.IsHTTPStatusCodeRetryable(resp.StatusCode) {
-		return true, fmt.Errorf("native voice upstream returned retryable status %d", resp.StatusCode)
+	if resp.StatusCode >= http.StatusBadRequest {
+		if httpclient.IsHTTPStatusCodeRetryable(resp.StatusCode) {
+			return true, fmt.Errorf("native voice upstream returned retryable status %d", resp.StatusCode)
+		}
+		return false, nil
 	}
 
 	if target.Protocol.InspectBusinessStatus {
@@ -465,12 +465,11 @@ func (s *nativeHTTPResponseSnapshot) writeTo(w http.ResponseWriter) (bool, int64
 	return writeNativeHTTPResponse(w, s.statusCode, s.header, s.body)
 }
 
-func (s *nativeHTTPResponseSnapshot) result(retry, committed bool, responseBytes int64, err error) NativeRelayResult {
+func (s *nativeHTTPResponseSnapshot) result(committed bool, responseBytes int64, err error) NativeRelayResult {
 	if s == nil {
-		return NativeRelayResult{Err: err, Retry: retry, Committed: committed, ResponseBytes: responseBytes}
+		return NativeRelayResult{Err: err, Committed: committed, ResponseBytes: responseBytes}
 	}
 	result := s.attempt
-	result.Retry = retry
 	result.Committed = committed
 	result.ResponseBytes = responseBytes
 	if err != nil {

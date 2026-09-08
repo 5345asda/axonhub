@@ -86,6 +86,7 @@ func TestNativeWebSocketRelayForwardsFinalUpstreamHandshakeResponse(t *testing.T
 		w.Header().Set("X-Upstream-Trace", "trace-123")
 		w.Header().Set("Authorization", "provider-secret")
 		w.Header().Set("Set-Cookie", "provider-secret=1")
+		w.Header().Set("WWW-Authenticate", `Bearer realm="provider"`)
 		w.Header().Set("Connection", "X-Provider-Hop")
 		w.Header().Set("X-Provider-Hop", "remove")
 		w.WriteHeader(http.StatusUnauthorized)
@@ -119,12 +120,46 @@ func TestNativeWebSocketRelayForwardsFinalUpstreamHandshakeResponse(t *testing.T
 	require.Equal(t, "application/json", response.Header.Get("Content-Type"))
 	require.Equal(t, "7", response.Header.Get("Retry-After"))
 	require.Equal(t, "trace-123", response.Header.Get("X-Upstream-Trace"))
+	require.Equal(t, `Bearer realm="provider"`, response.Header.Get("WWW-Authenticate"))
 	require.Empty(t, response.Header.Get("Authorization"))
 	require.Empty(t, response.Header.Get("Set-Cookie"))
 	require.Empty(t, response.Header.Get("Connection"))
 	require.Empty(t, response.Header.Get("X-Provider-Hop"))
 	require.Equal(t, int32(1), firstCalls.Load())
 	require.Equal(t, int32(1), secondCalls.Load())
+}
+
+func TestNativeWebSocketRelayReportsEachFailedHandshakeOnce(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"first candidate"}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"second candidate"}`))
+	}))
+	defer second.Close()
+
+	observer := &nativeRelayObserverCapture{}
+	inbound := httptest.NewRequest(http.MethodGet, "http://axonhub.test/ws/v1/t2a_v2_bidi", nil)
+	inbound.Header.Set("Connection", "Upgrade")
+	inbound.Header.Set("Upgrade", "websocket")
+	w := httptest.NewRecorder()
+
+	err := NewNativeWebSocketRelay(nil).Relay(WithNativeRelayObserver(context.Background(), observer), w, inbound, []NativeRelayTarget{
+		nativeWebSocketTestTarget(t, first.URL, objects.NativeVoiceAPIFormatMiniMaxT2ABidi, 1),
+		nativeWebSocketTestTarget(t, second.URL, objects.NativeVoiceAPIFormatMiniMaxT2ABidi, 2),
+	})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusUnauthorized, w.Code)
+	require.Len(t, observer.attempts, 2)
+	require.Len(t, observer.results, 2)
+	require.Equal(t, http.StatusServiceUnavailable, observer.results[0].StatusCode)
+	require.False(t, observer.results[0].Committed)
+	require.Equal(t, http.StatusUnauthorized, observer.results[1].StatusCode)
+	require.True(t, observer.results[1].Committed)
 }
 
 func TestNativeWebSocketRelayPreservesHandshakeResponseAfterTransportFailure(t *testing.T) {

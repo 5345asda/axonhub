@@ -28,33 +28,32 @@ const nativeVoicePersistenceTimeout = 10 * time.Second
 var nativeVoiceSensitiveValue = regexp.MustCompile(`(?i)(bearer\s+|(?:api[_-]?key|access[_-]?key|token|secret|authorization)\s*[=:]\s*)([^\s,;&]+)`)
 var nativeVoiceURL = regexp.MustCompile(`(?i)\b(?:https?|wss?)://[^\s"'<>]+`)
 
-// nativeVoiceRequestRecorder persists native relay metadata without inspecting
-// or retaining opaque response frames. It is request-scoped and attached to
-// the relay context, so fallback attempts remain independently inspectable.
+// nativeVoiceRequestRecorder captures relay metadata without doing I/O from
+// callbacks. The handler persists it only after the relay has completed.
 type nativeVoiceRequestRecorder struct {
 	requestService *biz.RequestService
-	request        *ent.Request
 	protocol       objects.NativeVoiceProtocol
 	model          string
 	stream         bool
+	requestHeaders http.Header
+	clientIP       string
 	requestBody    []byte
 	startedAt      time.Time
 
-	mu         sync.Mutex
-	executions map[int]int
-	failed     bool
-	final      nativeVoiceRelayOutcome
+	mu       sync.Mutex
+	attempts map[int]nativeVoiceRelayAttempt
+	results  map[int]voice.NativeRelayResult
+	order    []int
 }
 
-type nativeVoiceRelayOutcome struct {
-	statusCode int
-	headers    http.Header
-	bytes      int64
-	set        bool
+type nativeVoiceRelayAttempt struct {
+	id        int
+	channelID int
+	url       string
+	headers   http.Header
 }
 
 func newNativeVoiceRequestRecorder(
-	ctx context.Context,
 	requestService *biz.RequestService,
 	protocol objects.NativeVoiceProtocol,
 	model string,
@@ -67,179 +66,176 @@ func newNativeVoiceRequestRecorder(
 		return nil
 	}
 
-	recorder := &nativeVoiceRequestRecorder{
+	return &nativeVoiceRequestRecorder{
 		requestService: requestService,
 		protocol:       protocol,
 		model:          model,
 		stream:         stream,
+		requestHeaders: nativeVoiceMaskedHeaders(inbound.Header),
+		clientIP:       inbound.RemoteAddr,
 		requestBody:    append([]byte(nil), requestBody...),
 		startedAt:      startedAt,
-		executions:     make(map[int]int),
+		attempts:       make(map[int]nativeVoiceRelayAttempt),
+		results:        make(map[int]voice.NativeRelayResult),
 	}
-
-	persistCtx, cancel := nativeVoicePersistenceContext(ctx)
-	defer cancel()
-	request, err := requestService.CreateRequest(
-		persistCtx,
-		&llm.Request{Model: model, Stream: &stream},
-		&httpclient.Request{
-			Method:   inbound.Method,
-			URL:      inbound.URL.String(),
-			Path:     inbound.URL.Path,
-			Query:    inbound.URL.Query(),
-			Headers:  nativeVoiceMaskedHeaders(inbound.Header),
-			Body:     requestBody,
-			JSONBody: nativeVoiceJSONBody(requestBody),
-			ClientIP: inbound.RemoteAddr,
-		},
-		llm.APIFormat(protocol.APIFormat),
-	)
-	if err != nil {
-		log.Warn(ctx, "failed to persist native voice request", log.Cause(err))
-		return nil
-	}
-	recorder.request = request
-
-	return recorder
 }
 
-func (r *nativeVoiceRequestRecorder) OnNativeRelayAttempt(ctx context.Context, attempt voice.NativeRelayAttempt) {
-	if r == nil || r.request == nil || attempt.Target.Channel == nil {
+func (r *nativeVoiceRequestRecorder) OnNativeRelayAttempt(_ context.Context, attempt voice.NativeRelayAttempt) {
+	if r == nil || attempt.ChannelID == 0 {
 		return
-	}
-
-	persistCtx, cancel := nativeVoicePersistenceContext(ctx)
-	defer cancel()
-
-	requestHeaders := nativeVoiceMaskedHeaders(attempt.RequestHeaders)
-	execution, err := r.requestService.CreateRequestExecution(
-		persistCtx,
-		attempt.Target.Channel,
-		r.model,
-		r.request,
-		httpclient.Request{
-			URL:      nativeVoicePersistedURL(attempt.URL),
-			Headers:  requestHeaders,
-			JSONBody: nativeVoiceJSONBody(r.requestBody),
-			Body:     r.requestBody,
-		},
-		llm.APIFormat(r.protocol.APIFormat),
-		false,
-	)
-	if err != nil {
-		log.Warn(ctx, "failed to persist native voice execution", log.Cause(err), log.Int("channel_id", attempt.Target.Channel.ID))
-		return
-	}
-
-	if r.request.ChannelID == 0 {
-		if err := r.requestService.UpdateRequestChannelID(persistCtx, r.request.ID, attempt.Target.Channel.ID); err != nil {
-			log.Warn(ctx, "failed to persist native voice request channel", log.Cause(err), log.Int("request_id", r.request.ID))
-		} else {
-			r.request.ChannelID = attempt.Target.Channel.ID
-		}
 	}
 
 	r.mu.Lock()
-	r.executions[attempt.ID] = execution.ID
-	r.mu.Unlock()
+	defer r.mu.Unlock()
+	if _, exists := r.attempts[attempt.ID]; exists {
+		return
+	}
+	r.attempts[attempt.ID] = nativeVoiceRelayAttempt{
+		id:        attempt.ID,
+		channelID: attempt.ChannelID,
+		url:       nativeVoicePersistedURL(attempt.URL),
+		headers:   nativeVoiceMaskedHeaders(attempt.RequestHeaders),
+	}
+	r.order = append(r.order, attempt.ID)
 }
 
-func (r *nativeVoiceRequestRecorder) OnNativeRelayResult(ctx context.Context, result voice.NativeRelayResult) {
+func (r *nativeVoiceRequestRecorder) OnNativeRelayResult(_ context.Context, result voice.NativeRelayResult) {
 	if r == nil {
 		return
 	}
 
 	r.mu.Lock()
-	executionID := r.executions[result.ID]
-	r.mu.Unlock()
-	if executionID == 0 {
-		return
-	}
-
-	persistCtx, cancel := nativeVoicePersistenceContext(ctx)
-	defer cancel()
-	metrics := nativeVoiceLatencyMetrics(result.Duration)
-	failed := result.Err != nil || result.StatusCode >= http.StatusBadRequest
-	if !result.Retry {
-		r.mu.Lock()
-		r.final = nativeVoiceRelayOutcome{
-			statusCode: result.StatusCode,
-			headers:    result.ResponseHeaders.Clone(),
-			bytes:      result.ResponseBytes,
-			set:        true,
-		}
-		r.mu.Unlock()
-	}
-	if failed {
-		if !result.Retry {
-			r.mu.Lock()
-			r.failed = true
-			r.mu.Unlock()
-		}
-		errorMessage := nativeVoicePersistedError(result.Err)
-		if errorMessage == "" {
-			errorMessage = fmt.Sprintf("native voice upstream returned status %d", result.StatusCode)
-		}
-		if err := r.requestService.UpdateRequestExecutionStatusWithMetrics(
-			persistCtx,
-			executionID,
-			requestexecution.StatusFailed,
-			errorMessage,
-			nativeVoiceExecutionErrorInfo(result.StatusCode),
-			metrics,
-		); err != nil {
-			log.Warn(ctx, "failed to persist native voice execution failure", log.Cause(err), log.Int("execution_id", executionID))
-		}
-		return
-	}
-
-	if err := r.requestService.UpdateRequestExecutionCompleted(
-		persistCtx,
-		executionID,
-		"",
-		newNativeVoiceResponseMetadata(result.StatusCode, result.ResponseHeaders, result.ResponseBytes),
-		metrics,
-	); err != nil {
-		log.Warn(ctx, "failed to persist native voice execution completion", log.Cause(err), log.Int("execution_id", executionID))
-	}
+	defer r.mu.Unlock()
+	result.ResponseHeaders = nativeVoiceMaskedHeaders(result.ResponseHeaders)
+	r.results[result.ID] = result
 }
 
 func (r *nativeVoiceRequestRecorder) finish(ctx context.Context, relayErr error) {
-	if r == nil || r.request == nil {
+	if r == nil || r.requestService == nil {
 		return
 	}
 
+	attempts, results, finalID := r.snapshot()
 	persistCtx, cancel := nativeVoicePersistenceContext(ctx)
 	defer cancel()
-	metrics := nativeVoiceLatencyMetrics(time.Since(r.startedAt))
-	r.mu.Lock()
-	failed := r.failed
-	final := r.final
-	r.mu.Unlock()
-	if relayErr != nil || failed {
-		var err error
+
+	stream := r.stream
+	request, err := r.requestService.CreateRequest(
+		persistCtx,
+		&llm.Request{Model: r.model, Stream: &stream},
+		&httpclient.Request{
+			Headers:  r.requestHeaders,
+			Body:     r.requestBody,
+			JSONBody: nativeVoiceJSONBody(r.requestBody),
+			ClientIP: r.clientIP,
+		},
+		llm.APIFormat(r.protocol.APIFormat),
+	)
+	if err != nil {
+		log.Warn(ctx, "failed to persist native voice request", log.Cause(err))
+		return
+	}
+
+	for _, attempt := range attempts {
+		result, hasResult := results[attempt.id]
+		execution, createErr := r.requestService.CreateRequestExecution(
+			persistCtx,
+			&biz.Channel{Channel: &ent.Channel{ID: attempt.channelID}},
+			r.model,
+			request,
+			httpclient.Request{URL: attempt.url, Headers: attempt.headers, Body: r.requestBody, JSONBody: nativeVoiceJSONBody(r.requestBody)},
+			llm.APIFormat(r.protocol.APIFormat),
+			false,
+		)
+		if createErr != nil {
+			log.Warn(ctx, "failed to persist native voice execution", log.Cause(createErr), log.Int("channel_id", attempt.channelID))
+			continue
+		}
+		if !hasResult || result.Err != nil || result.StatusCode >= http.StatusBadRequest {
+			r.updateFailedExecution(ctx, persistCtx, execution.ID, result, hasResult)
+			continue
+		}
+		if updateErr := r.requestService.UpdateRequestExecutionCompleted(persistCtx, execution.ID, "", newNativeVoiceResponseMetadata(result.StatusCode, result.ResponseHeaders, result.ResponseBytes), nativeVoiceLatencyMetrics(result.Duration)); updateErr != nil {
+			log.Warn(ctx, "failed to persist native voice execution completion", log.Cause(updateErr), log.Int("execution_id", execution.ID))
+		}
+	}
+
+	if finalID != 0 {
+		for _, attempt := range attempts {
+			if attempt.id != finalID {
+				continue
+			}
+			if err := r.requestService.UpdateRequestChannelID(persistCtx, request.ID, attempt.channelID); err != nil {
+				log.Warn(ctx, "failed to persist native voice request channel", log.Cause(err), log.Int("request_id", request.ID))
+			}
+		}
+	}
+
+	final, hasFinal := results[finalID]
+	failed := relayErr != nil || (hasFinal && (final.Err != nil || final.StatusCode >= http.StatusBadRequest))
+	if failed {
 		if relayErr != nil {
-			err = r.requestService.UpdateRequestStatusFromError(persistCtx, r.request.ID, relayErr)
+			err = r.requestService.UpdateRequestStatusFromError(persistCtx, request.ID, relayErr)
 		} else {
-			err = r.requestService.UpdateRequestStatus(persistCtx, r.request.ID, entrequest.StatusFailed)
+			err = r.requestService.UpdateRequestStatus(persistCtx, request.ID, entrequest.StatusFailed)
 		}
 		if err != nil {
-			log.Warn(ctx, "failed to persist native voice request failure", log.Cause(err), log.Int("request_id", r.request.ID))
+			log.Warn(ctx, "failed to persist native voice request failure", log.Cause(err), log.Int("request_id", request.ID))
 		}
 		return
 	}
 
-	if !final.set {
-		final.statusCode = http.StatusOK
+	if !hasFinal {
+		final.StatusCode = http.StatusOK
 	}
-	if err := r.requestService.UpdateRequestCompleted(
-		persistCtx,
-		r.request.ID,
-		"",
-		newNativeVoiceResponseMetadata(final.statusCode, final.headers, final.bytes),
-		metrics,
-	); err != nil {
-		log.Warn(ctx, "failed to persist native voice request completion", log.Cause(err), log.Int("request_id", r.request.ID))
+	if err := r.requestService.UpdateRequestCompleted(persistCtx, request.ID, "", newNativeVoiceResponseMetadata(final.StatusCode, final.ResponseHeaders, final.ResponseBytes), nativeVoiceLatencyMetrics(time.Since(r.startedAt))); err != nil {
+		log.Warn(ctx, "failed to persist native voice request completion", log.Cause(err), log.Int("request_id", request.ID))
+	}
+}
+
+func (r *nativeVoiceRequestRecorder) snapshot() ([]nativeVoiceRelayAttempt, map[int]voice.NativeRelayResult, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	attempts := make([]nativeVoiceRelayAttempt, 0, len(r.order))
+	for _, id := range r.order {
+		attempt, ok := r.attempts[id]
+		if !ok {
+			continue
+		}
+		attempt.headers = nativeVoiceMaskedHeaders(attempt.headers)
+		attempts = append(attempts, attempt)
+	}
+	results := make(map[int]voice.NativeRelayResult, len(r.results))
+	for id, result := range r.results {
+		result.ResponseHeaders = nativeVoiceMaskedHeaders(result.ResponseHeaders)
+		results[id] = result
+	}
+
+	finalID := 0
+	for _, id := range r.order {
+		if result, ok := results[id]; ok && result.Committed {
+			finalID = id
+		}
+	}
+	if finalID == 0 && len(r.order) > 0 {
+		finalID = r.order[len(r.order)-1]
+	}
+	return attempts, results, finalID
+}
+
+func (r *nativeVoiceRequestRecorder) updateFailedExecution(ctx, persistCtx context.Context, executionID int, result voice.NativeRelayResult, hasResult bool) {
+	errorMessage := "native voice upstream attempt did not produce a result"
+	statusCode := 0
+	if hasResult {
+		errorMessage = nativeVoicePersistedError(result.Err)
+		statusCode = result.StatusCode
+		if errorMessage == "" {
+			errorMessage = fmt.Sprintf("native voice upstream returned status %d", statusCode)
+		}
+	}
+	if err := r.requestService.UpdateRequestExecutionStatusWithMetrics(persistCtx, executionID, requestexecution.StatusFailed, errorMessage, nativeVoiceExecutionErrorInfo(statusCode), nativeVoiceLatencyMetrics(result.Duration)); err != nil {
+		log.Warn(ctx, "failed to persist native voice execution failure", log.Cause(err), log.Int("execution_id", executionID))
 	}
 }
 

@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
@@ -97,6 +99,137 @@ func TestServeNativeVoiceHTTPPersistsFailedBusinessAttempt(t *testing.T) {
 	require.Equal(t, "******", nativeVoiceStoredHeader(t, executions[0].RequestHeaders, "Authorization"))
 }
 
+func TestServeNativeVoiceHTTPPersistsTransportFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := ent.NewContext(authz.WithTestBypass(context.Background()), enttest.NewEntClient(t, "sqlite3", "file:native_voice_persistence_transport_failure?mode=memory&_fk=0"))
+	client := ent.FromContext(ctx)
+	t.Cleanup(func() { _ = client.Close() })
+
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	upstreamURL := upstream.URL
+	upstream.Close()
+
+	protocol, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatMiniMaxT2A)
+	require.True(t, ok)
+	channelRow, err := client.Channel.Create().
+		SetName("native voice transport failure").
+		SetType(channel.TypeMinimax).
+		SetStatus(channel.StatusEnabled).
+		SetBaseURL(upstreamURL).
+		SetSupportedModels([]string{"speech-2.8-hd"}).
+		SetDefaultTestModel("speech-2.8-hd").
+		SetCredentials(objects.ChannelCredentials{APIKey: "provider-key"}).
+		SetEndpoints([]objects.ChannelEndpoint{{
+			APIFormat: protocol.APIFormat,
+			Path:      protocol.Path,
+			BaseURL:   upstreamURL,
+			Transport: protocol.Transport,
+		}}).
+		Save(ctx)
+	require.NoError(t, err)
+
+	requestService := newNativeVoicePersistenceRequestService(t, client)
+	selector := voice.NewCandidateSelector(func() []*biz.Channel {
+		return []*biz.Channel{{Channel: channelRow}}
+	}, nil)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd","text":"hello"}`)).WithContext(ctx)
+
+	serveNativeVoiceHTTP(c, selector, nil, voice.NewNativeHTTPRelay(nil), requestService)
+
+	require.Equal(t, http.StatusBadGateway, w.Code)
+	require.Contains(t, w.Body.String(), "native voice upstream request failed")
+
+	requests, err := client.Request.Query().All(ctx)
+	require.NoError(t, err)
+	require.Len(t, requests, 1)
+	require.Equal(t, entrequest.StatusFailed, requests[0].Status)
+
+	executions, err := client.RequestExecution.Query().All(ctx)
+	require.NoError(t, err)
+	require.Len(t, executions, 1)
+	require.Equal(t, entrequestexecution.StatusFailed, executions[0].Status)
+	require.Equal(t, channelRow.ID, executions[0].ChannelID)
+}
+
+func TestServeNativeVoiceHTTPWritesBeforePersistingExecutions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := ent.NewContext(authz.WithTestBypass(context.Background()), enttest.NewEntClient(t, "sqlite3", "file:native_voice_persistence_first_write?mode=memory&_fk=0"))
+	client := ent.FromContext(ctx)
+	t.Cleanup(func() { _ = client.Close() })
+
+	persistStarted := make(chan struct{})
+	releasePersist := make(chan struct{})
+	client.RequestExecution.Use(func(next ent.Mutator) ent.Mutator {
+		return ent.MutateFunc(func(ctx context.Context, mutation ent.Mutation) (ent.Value, error) {
+			if mutation.Op().Is(ent.OpCreate) {
+				close(persistStarted)
+				<-releasePersist
+			}
+			return next.Mutate(ctx, mutation)
+		})
+	})
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0},"data":{"audio":"00"}}`))
+	}))
+	defer upstream.Close()
+
+	protocol, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatMiniMaxT2A)
+	require.True(t, ok)
+	channelRow, err := client.Channel.Create().
+		SetName("native voice first write").
+		SetType(channel.TypeMinimax).
+		SetStatus(channel.StatusEnabled).
+		SetBaseURL(upstream.URL).
+		SetSupportedModels([]string{"speech-2.8-hd"}).
+		SetDefaultTestModel("speech-2.8-hd").
+		SetCredentials(objects.ChannelCredentials{APIKey: "provider-key"}).
+		SetEndpoints([]objects.ChannelEndpoint{{
+			APIFormat: protocol.APIFormat,
+			Path:      protocol.Path,
+			BaseURL:   upstream.URL,
+			Transport: protocol.Transport,
+		}}).
+		Save(ctx)
+	require.NoError(t, err)
+
+	requestService := newNativeVoicePersistenceRequestService(t, client)
+	selector := voice.NewCandidateSelector(func() []*biz.Channel {
+		return []*biz.Channel{{Channel: channelRow}}
+	}, nil)
+	w := newNativeVoiceFirstWriteRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd","text":"hello"}`)).WithContext(ctx)
+
+	done := make(chan struct{})
+	go func() {
+		serveNativeVoiceHTTP(c, selector, nil, voice.NewNativeHTTPRelay(nil), requestService)
+		close(done)
+	}()
+
+	select {
+	case <-w.firstWrite:
+	case <-time.After(500 * time.Millisecond):
+		close(releasePersist)
+		<-done
+		require.Fail(t, "execution persistence blocked the first native response byte")
+	}
+
+	select {
+	case <-persistStarted:
+	case <-time.After(500 * time.Millisecond):
+		close(releasePersist)
+		<-done
+		require.Fail(t, "expected native execution persistence")
+	}
+	close(releasePersist)
+	<-done
+	require.Equal(t, http.StatusOK, w.Code)
+}
+
 func TestNativeVoicePersistedURLStripsCredentialsAndQuery(t *testing.T) {
 	stored := nativeVoicePersistedURL("https://user:password@provider.test/v1/t2a_v2?token=provider-secret&model=speech-2.8-hd")
 
@@ -153,3 +286,28 @@ func nativeVoiceStoredHeader(t *testing.T, raw []byte, key string) string {
 	require.NoError(t, json.Unmarshal(raw, &headers))
 	return headers.Get(key)
 }
+
+type nativeVoiceFirstWriteRecorder struct {
+	*httptest.ResponseRecorder
+	firstWrite chan struct{}
+	once       sync.Once
+}
+
+func newNativeVoiceFirstWriteRecorder() *nativeVoiceFirstWriteRecorder {
+	return &nativeVoiceFirstWriteRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		firstWrite:       make(chan struct{}),
+	}
+}
+
+func (w *nativeVoiceFirstWriteRecorder) WriteHeader(code int) {
+	w.once.Do(func() { close(w.firstWrite) })
+	w.ResponseRecorder.WriteHeader(code)
+}
+
+func (w *nativeVoiceFirstWriteRecorder) Write(body []byte) (int, error) {
+	w.once.Do(func() { close(w.firstWrite) })
+	return w.ResponseRecorder.Write(body)
+}
+
+func (*nativeVoiceFirstWriteRecorder) Flush() {}

@@ -55,7 +55,8 @@ func (r *NativeWebSocketRelay) Relay(ctx context.Context, w http.ResponseWriter,
 	var upstreamSlot *nativeRelayAdmissionSlot
 	var upstreamAttemptID int
 	var upstreamAttemptStarted time.Time
-	for index, target := range targets {
+	attemptID := 0
+	for _, target := range targets {
 		if target.Channel == nil {
 			lastErr = errors.New("native websocket relay target is missing channel")
 			continue
@@ -65,30 +66,33 @@ func (r *NativeWebSocketRelay) Relay(ctx context.Context, w http.ResponseWriter,
 			lastErr = fmt.Errorf("native voice channel admission failed: %w", admissionErr)
 			continue
 		}
+		attemptID++
 		attemptStarted := time.Now()
 		conn, response, attemptURL, attemptHeaders, err := r.dialUpstream(ctx, inbound, target)
-		notifyNativeRelayAttempt(ctx, NativeRelayAttempt{ID: index, Target: target, URL: attemptURL, RequestHeaders: attemptHeaders, StartedAt: attemptStarted})
+		notifyNativeRelayAttempt(ctx, NativeRelayAttempt{ID: attemptID, ChannelID: target.Channel.ID, URL: attemptURL, RequestHeaders: attemptHeaders, StartedAt: attemptStarted})
 		if err != nil {
 			slot.release()
 			lastErr = err
 			if handshakeResponse := captureNativeWebSocketHandshakeResponse(response); handshakeResponse != nil {
-				lastHandshakeResponse = handshakeResponse
-				handshakeResponse.attemptID = index
+				handshakeResponse.attemptID = attemptID
 				handshakeResponse.startedAt = attemptStarted
 				handshakeResponse.err = err
-				notifyNativeRelayResult(ctx, NativeRelayResult{
-					ID: index, StatusCode: handshakeResponse.statusCode, ResponseHeaders: handshakeResponse.header,
-					ResponseBytes: int64(len(handshakeResponse.body)), Err: err, Retry: index < len(targets)-1,
-					Duration: time.Since(attemptStarted),
-				})
+				if lastHandshakeResponse != nil {
+					notifyNativeRelayResult(ctx, nativeWebSocketHandshakeRelayResult(lastHandshakeResponse, false))
+				}
+				lastHandshakeResponse = handshakeResponse
 			} else {
-				notifyNativeRelayResult(ctx, NativeRelayResult{ID: index, Err: err, Retry: index < len(targets)-1, Duration: time.Since(attemptStarted)})
+				notifyNativeRelayResult(ctx, NativeRelayResult{ID: attemptID, Err: err, Duration: time.Since(attemptStarted)})
 			}
 			continue
 		}
+		if lastHandshakeResponse != nil {
+			notifyNativeRelayResult(ctx, nativeWebSocketHandshakeRelayResult(lastHandshakeResponse, false))
+			lastHandshakeResponse = nil
+		}
 		upstreamConn = conn
 		upstreamSlot = slot
-		upstreamAttemptID = index
+		upstreamAttemptID = attemptID
 		upstreamAttemptStarted = attemptStarted
 		break
 	}
@@ -96,17 +100,9 @@ func (r *NativeWebSocketRelay) Relay(ctx context.Context, w http.ResponseWriter,
 	if upstreamConn == nil {
 		if lastHandshakeResponse != nil {
 			writeErr := writeNativeWebSocketHandshakeResponse(w, lastHandshakeResponse)
-			result := NativeRelayResult{
-				ID:              lastHandshakeResponse.attemptID,
-				StatusCode:      lastHandshakeResponse.statusCode,
-				ResponseHeaders: lastHandshakeResponse.header,
-				ResponseBytes:   int64(len(lastHandshakeResponse.body)),
-				Err:             lastHandshakeResponse.err,
-				Duration:        time.Since(lastHandshakeResponse.startedAt),
-			}
+			result := nativeWebSocketHandshakeRelayResult(lastHandshakeResponse, true)
 			if writeErr != nil {
 				result.Err = writeErr
-				result.Committed = true
 			}
 			notifyNativeRelayResult(ctx, result)
 			return writeErr
@@ -208,6 +204,21 @@ func captureNativeWebSocketHandshakeResponse(resp *http.Response) *nativeWebSock
 		_ = resp.Body.Close()
 	}
 	return response
+}
+
+func nativeWebSocketHandshakeRelayResult(response *nativeWebSocketHandshakeResponse, committed bool) NativeRelayResult {
+	if response == nil {
+		return NativeRelayResult{Committed: committed}
+	}
+	return NativeRelayResult{
+		ID:              response.attemptID,
+		StatusCode:      response.statusCode,
+		ResponseHeaders: response.header,
+		ResponseBytes:   int64(len(response.body)),
+		Err:             response.err,
+		Committed:       committed,
+		Duration:        time.Since(response.startedAt),
+	}
 }
 
 func writeNativeWebSocketHandshakeResponse(w http.ResponseWriter, response *nativeWebSocketHandshakeResponse) error {

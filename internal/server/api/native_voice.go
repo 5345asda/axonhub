@@ -153,7 +153,6 @@ func serveNativeVoiceHTTP(c *gin.Context, selector *voice.CandidateSelector, loa
 		return
 	}
 	recorder := newNativeVoiceRequestRecorder(
-		ctx,
 		requestService,
 		protocol,
 		nativeVoiceLogModel(body, protocol.ModelPath),
@@ -169,11 +168,11 @@ func serveNativeVoiceHTTP(c *gin.Context, selector *voice.CandidateSelector, loa
 
 	trackNativeVoiceSelection(loadBalancer, targets)
 	relayErr := relay.Relay(ctx, c.Writer, c.Request, targets)
-	if recorder != nil {
-		recorder.finish(ctx, relayErr)
-	}
 	if relayErr != nil && !c.Writer.Written() {
 		JSONError(c, nativeVoiceErrorStatus(relayErr), relayErr)
+	}
+	if recorder != nil {
+		recorder.finish(ctx, relayErr)
 	}
 }
 
@@ -192,7 +191,6 @@ func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector
 	}
 
 	recorder := newNativeVoiceRequestRecorder(
-		ctx,
 		requestService,
 		protocol,
 		strings.TrimSpace(c.Query("model")),
@@ -208,11 +206,11 @@ func serveNativeVoiceWebSocket(c *gin.Context, selector *voice.CandidateSelector
 
 	trackNativeVoiceSelection(loadBalancer, targets)
 	relayErr := relay.Relay(ctx, c.Writer, c.Request, targets)
-	if recorder != nil {
-		recorder.finish(ctx, relayErr)
-	}
 	if relayErr != nil && !c.Writer.Written() {
 		JSONError(c, nativeVoiceErrorStatus(relayErr), relayErr)
+	}
+	if recorder != nil {
+		recorder.finish(ctx, relayErr)
 	}
 }
 

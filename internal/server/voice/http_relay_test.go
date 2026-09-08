@@ -215,6 +215,36 @@ func TestNativeHTTPRelayForwardsNonRetryableUpstreamError(t *testing.T) {
 	require.Equal(t, int32(0), secondCalls.Load())
 }
 
+func TestNativeHTTPRelayDoesNotRetryHTTPErrorWithMiniMaxBusinessCode(t *testing.T) {
+	var firstCalls, secondCalls atomic.Int32
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		firstCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":2013,"status_msg":"invalid params"}}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondCalls.Add(1)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer second.Close()
+
+	w := httptest.NewRecorder()
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd"}`)),
+		[]NativeRelayTarget{
+			nativeHTTPTestTarget(t, first.URL, objects.NativeVoiceAPIFormatMiniMaxT2A),
+			nativeHTTPTestTarget(t, second.URL, objects.NativeVoiceAPIFormatMiniMaxT2A),
+		})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusBadRequest, w.Code)
+	require.JSONEq(t, `{"base_resp":{"status_code":2013,"status_msg":"invalid params"}}`, w.Body.String())
+	require.Equal(t, int32(1), firstCalls.Load())
+	require.Equal(t, int32(0), secondCalls.Load())
+}
+
 func TestNativeHTTPRelayRetriesRetryableUpstreamResponseBeforeCommit(t *testing.T) {
 	var firstCalls, secondCalls atomic.Int32
 	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -439,7 +469,7 @@ func TestNativeHTTPRelayReportsFinalBusinessFailureToObserver(t *testing.T) {
 	require.Len(t, observer.results, 1)
 	require.Equal(t, http.StatusOK, observer.results[0].StatusCode)
 	require.ErrorContains(t, observer.results[0].Err, "status_code=1004")
-	require.False(t, observer.results[0].Retry)
+	require.True(t, observer.results[0].Committed)
 }
 
 func TestNativeHTTPRelayRetriesCompressedMiniMaxBusinessFailure(t *testing.T) {
