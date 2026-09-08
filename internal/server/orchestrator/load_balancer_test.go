@@ -697,6 +697,66 @@ func TestLoadBalancer_TopK_RetryDisabled(t *testing.T) {
 	assert.Equal(t, 4, result[0].Channel.ID, "With retry disabled, should get only best channel")
 }
 
+func TestLoadBalancer_SortAllIgnoresRetryTopK(t *testing.T) {
+	strategy := &channelBasedStrategy{
+		name:   "test",
+		scores: map[int]float64{1: 100, 2: 300, 3: 200},
+	}
+	lb := newTestLoadBalancer(t, &biz.RetryPolicy{Enabled: false}, strategy)
+	candidates := []*ChannelModelsCandidate{
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "ch1"}}},
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 2, Name: "ch2"}}},
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 3, Name: "ch3"}}},
+	}
+
+	result := lb.SortAll(context.Background(), candidates, "", false)
+
+	require.Len(t, result, 3)
+	assert.Equal(t, 2, result[0].Channel.ID)
+	assert.Equal(t, 3, result[1].Channel.ID)
+	assert.Equal(t, 1, result[2].Channel.ID)
+}
+
+func TestLoadBalancer_SortAllTracksFirstCandidate(t *testing.T) {
+	strategy := &channelBasedStrategy{
+		name:   "test",
+		scores: map[int]float64{1: 100, 2: 300},
+	}
+	tracker := &mockSelectionTracker{}
+	lb := NewLoadBalancer(
+		&mockRetryPolicyProvider{policy: &biz.RetryPolicy{Enabled: false}},
+		tracker,
+		strategy,
+	)
+	candidates := []*ChannelModelsCandidate{
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "ch1"}}},
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 2, Name: "ch2"}}},
+	}
+
+	result := lb.SortAll(context.Background(), candidates, "", false)
+
+	require.Len(t, result, 2)
+	assert.Equal(t, 2, result[0].Channel.ID)
+	assert.Equal(t, 1, tracker.selections[2])
+	assert.Len(t, tracker.selections, 1)
+}
+
+func TestLoadBalancer_SortAllTracksSingleCandidate(t *testing.T) {
+	tracker := &mockSelectionTracker{}
+	lb := NewLoadBalancer(
+		&mockRetryPolicyProvider{policy: &biz.RetryPolicy{Enabled: false}},
+		tracker,
+	)
+	candidates := []*ChannelModelsCandidate{
+		{Channel: &biz.Channel{Channel: &ent.Channel{ID: 1, Name: "ch1"}}},
+	}
+
+	result := lb.SortAll(context.Background(), candidates, "", false)
+
+	require.Len(t, result, 1)
+	assert.Equal(t, 1, tracker.selections[1])
+}
+
 // TestLoadBalancer_TopK_RetryEnabled simulates retry enabled with max 3 retries.
 func TestLoadBalancer_TopK_RetryEnabled(t *testing.T) {
 	ctx := context.Background()

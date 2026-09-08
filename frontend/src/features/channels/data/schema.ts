@@ -46,9 +46,50 @@ export const configurableChannelEndpointApiFormats = [
   'gemini/embeddings',
   'jina/rerank',
   'jina/embeddings',
+  'bailian/asr_realtime',
+  'bailian/asr_inference',
+  'bailian/tts_realtime',
+  'bailian/tts_inference',
+  'bailian/tts',
+  'bailian/multimodal_generation',
+  'minimax/t2a_v2',
+  'minimax/t2a_v2_ws',
+  'minimax/t2a_v2_bidi',
+  'doubao/asr_bidi',
+  'doubao/asr_nostream',
+  'doubao/asr',
+  'doubao/tts_bidi',
+  'doubao/tts_ws',
+  'doubao/tts',
+  'doubao/tts_sse',
 ] as const;
 
 export const configurableChannelEndpointApiFormatSchema = z.enum(configurableChannelEndpointApiFormats);
+
+export type NativeChannelEndpointDefaults = {
+  path: string;
+  transport: 'http' | 'websocket';
+  requiresResourceID?: true;
+};
+
+export const nativeChannelEndpointDefaults: Record<string, NativeChannelEndpointDefaults> = {
+  'bailian/asr_realtime': { path: '/api-ws/v1/realtime', transport: 'websocket' },
+  'bailian/asr_inference': { path: '/api-ws/v1/inference', transport: 'websocket' },
+  'bailian/tts_realtime': { path: '/api-ws/v1/realtime', transport: 'websocket' },
+  'bailian/tts_inference': { path: '/api-ws/v1/inference', transport: 'websocket' },
+  'bailian/tts': { path: '/api/v1/services/audio/tts/SpeechSynthesizer', transport: 'http' },
+  'bailian/multimodal_generation': { path: '/api/v1/services/aigc/multimodal-generation/generation', transport: 'http' },
+  'minimax/t2a_v2': { path: '/v1/t2a_v2', transport: 'http' },
+  'minimax/t2a_v2_ws': { path: '/ws/v1/t2a_v2', transport: 'websocket' },
+  'minimax/t2a_v2_bidi': { path: '/ws/v1/t2a_v2_bidi', transport: 'websocket' },
+  'doubao/asr_bidi': { path: '/api/v3/sauc/bigmodel_async', transport: 'websocket', requiresResourceID: true },
+  'doubao/asr_nostream': { path: '/api/v3/sauc/bigmodel_nostream', transport: 'websocket', requiresResourceID: true },
+  'doubao/asr': { path: '/api/v3/sauc/bigmodel', transport: 'websocket', requiresResourceID: true },
+  'doubao/tts_bidi': { path: '/api/v3/tts/bidirection', transport: 'websocket', requiresResourceID: true },
+  'doubao/tts_ws': { path: '/api/v3/tts/unidirectional/stream', transport: 'websocket', requiresResourceID: true },
+  'doubao/tts': { path: '/api/v3/tts/unidirectional', transport: 'http', requiresResourceID: true },
+  'doubao/tts_sse': { path: '/api/v3/tts/unidirectional/sse', transport: 'http', requiresResourceID: true },
+};
 
 // Channel Endpoint
 export const channelEndpointSchema = z.object({
@@ -56,6 +97,7 @@ export const channelEndpointSchema = z.object({
   path: z.string().optional(),
   baseURL: z.url('Invalid URL').optional().or(z.literal('')),
   transport: z.enum(['http', 'websocket']).optional().or(z.literal('')),
+  resourceID: z.string().optional(),
 });
 export type ChannelEndpoint = z.infer<typeof channelEndpointSchema>;
 
@@ -435,16 +477,6 @@ export const channelSchema = z.object({
   defaultEndpoints: z.array(channelEndpointSchema).optional().default([]).nullable(),
 });
 export type Channel = z.infer<typeof channelSchema>;
-
-// Simplified schema for saveChannelEndpoints mutation response
-export const channelEndpointsResponseSchema = z.object({
-  id: z.string(),
-  type: channelTypeSchema,
-  name: z.string(),
-  defaultEndpoints: z.array(channelEndpointSchema).optional().default([]).nullable(),
-  endpoints: z.array(channelEndpointSchema).optional().default([]).nullable(),
-});
-export type ChannelEndpointsResponse = z.infer<typeof channelEndpointsResponseSchema>;
 
 export const testAPIKeyResultSchema = z.object({
   keyPrefix: z.string(),
