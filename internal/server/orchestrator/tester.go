@@ -4,15 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"path"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 	"github.com/samber/lo"
 	"github.com/tidwall/gjson"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/looplj/axonhub/internal/ent/channel"
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/pkg/xjson"
@@ -28,6 +35,14 @@ import (
 const testChannelAPIKeysMaxConcurrency = 8
 
 const responsesWebSocketTestPrompt = "ping"
+
+const (
+	nativeBailianASRTestModel        = "qwen-audio-3.0-asr-flash-streaming"
+	nativeBailianASRTestTimeout      = 10 * time.Second
+	nativeBailianASRTestMaxErrorBody = 8 << 10
+)
+
+var nativeBailianASRKeyPattern = regexp.MustCompile(`(?i)(?:sk|ak)-[a-z0-9_-]{8,}`)
 
 // TestChannelOrchestrator handles channel testing functionality.
 // It is stateless and can be reused across multiple test requests.
@@ -143,6 +158,34 @@ type TestChannelResult struct {
 	Error   *string
 }
 
+type nativeBailianASRProbeHeader struct {
+	Action       string `json:"action,omitempty"`
+	TaskID       string `json:"task_id,omitempty"`
+	Streaming    string `json:"streaming,omitempty"`
+	Event        string `json:"event,omitempty"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+type nativeBailianASRProbeRequest struct {
+	Header  nativeBailianASRProbeHeader `json:"header"`
+	Payload struct {
+		TaskGroup  string `json:"task_group"`
+		Task       string `json:"task"`
+		Function   string `json:"function"`
+		Model      string `json:"model"`
+		Parameters struct {
+			Format     string `json:"format"`
+			SampleRate int    `json:"sample_rate"`
+		} `json:"parameters"`
+		Input map[string]any `json:"input"`
+	} `json:"payload"`
+}
+
+type nativeBailianASRProbeEvent struct {
+	Header nativeBailianASRProbeHeader `json:"header"`
+}
+
 // TestChannel tests a specific channel with a simple request.
 func (processor *TestChannelOrchestrator) TestChannel(
 	ctx context.Context,
@@ -150,8 +193,19 @@ func (processor *TestChannelOrchestrator) TestChannel(
 	modelID *string,
 	proxy *httpclient.ProxyConfig,
 ) (*TestChannelResult, error) {
+	channel, err := processor.channelService.GetChannel(ctx, channelID.ID)
+	if err != nil {
+		return nil, err
+	}
+
+	testModel := lo.FromPtr(modelID)
+	if testModel == "" {
+		testModel = channel.DefaultTestModel
+	}
+	if endpoint, ok := nativeBailianASRTestEndpoint(channel, testModel); ok {
+		return processor.testNativeBailianASR(ctx, channel, endpoint, proxy), nil
+	}
 	inbound := openai.NewInboundTransformer()
-	// Create ChatCompletionOrchestrator for this test request
 	chatProcessor := &ChatCompletionOrchestrator{
 		channelSelector: NewSpecifiedChannelSelector(processor.channelService, channelID),
 		RequestService:  processor.requestService,
@@ -172,16 +226,6 @@ func (processor *TestChannelOrchestrator) TestChannel(
 		circuitBreakerLoadBalancer: processor.loadBalancer,
 		channelLimiterManager:      processor.channelLimiterManager,
 		modelCircuitBreaker:        processor.modelCircuitBreaker,
-	}
-
-	channel, err := processor.channelService.GetChannel(ctx, channelID.ID)
-	if err != nil {
-		return nil, err
-	}
-
-	testModel := lo.FromPtr(modelID)
-	if testModel == "" {
-		testModel = channel.DefaultTestModel
 	}
 	systemPrompt, userPrompt, err := processor.systemService.ChannelTestPrompts(ctx)
 	if err != nil {
@@ -252,6 +296,205 @@ func (processor *TestChannelOrchestrator) TestChannel(
 		Message: response.Choices[0].Message.Content.Content,
 		Error:   nil,
 	}, nil
+}
+
+// nativeBailianASRTestEndpoint returns only the exact native ASR endpoint that
+// can be tested without translating the provider protocol through ChatCompletion.
+func nativeBailianASRTestEndpoint(ch *biz.Channel, model string) (objects.ChannelEndpoint, bool) {
+	if ch == nil || ch.Channel == nil || ch.Type != channel.TypeBailian || model != nativeBailianASRTestModel {
+		return objects.ChannelEndpoint{}, false
+	}
+
+	entry, ok := ch.GetDirectModelEntries()[model]
+	if !ok || entry.ActualModel != model {
+		return objects.ChannelEndpoint{}, false
+	}
+
+	formats := ch.ForcedAPIFormats(model)
+	if len(formats) != 1 || formats[0] != objects.NativeVoiceAPIFormatBailianASRInference {
+		return objects.ChannelEndpoint{}, false
+	}
+
+	for _, endpoint := range ch.ResolveEndpoints() {
+		if endpoint.APIFormat == objects.NativeVoiceAPIFormatBailianASRInference &&
+			endpoint.Path == "/api-ws/v1/inference" &&
+			objects.NativeVoiceEndpointTransport(endpoint) == objects.ChannelEndpointTransportWebSocket {
+			return endpoint, true
+		}
+	}
+	return objects.ChannelEndpoint{}, false
+}
+
+func (processor *TestChannelOrchestrator) testNativeBailianASR(
+	ctx context.Context,
+	channel *biz.Channel,
+	endpoint objects.ChannelEndpoint,
+	proxy *httpclient.ProxyConfig,
+) *TestChannelResult {
+	startedAt := time.Now()
+	result := func(success bool, message, errText string) *TestChannelResult {
+		var testError *string
+		if errText != "" {
+			testError = lo.ToPtr(errText)
+		}
+		return &TestChannelResult{
+			Latency: time.Since(startedAt).Seconds(),
+			Success: success,
+			Message: lo.ToPtr(message),
+			Error:   testError,
+		}
+	}
+
+	upstreamURL, err := nativeBailianASRWebSocketURL(channel, endpoint)
+	if err != nil {
+		return result(false, "", "native voice infrastructure error: "+err.Error())
+	}
+
+	apiKey := channel.SelectAPIKey(ctx)
+	if apiKey == "" {
+		return result(false, "", "native voice infrastructure error: no enabled API key")
+	}
+
+	dialer := nativeBailianASRWebSocketDialer(channel, proxy)
+	probeCtx, cancel := context.WithTimeout(ctx, nativeBailianASRTestTimeout)
+	defer cancel()
+	conn, response, err := dialer.DialContext(probeCtx, upstreamURL, http.Header{"Authorization": {"Bearer " + apiKey}})
+	if err != nil {
+		if response != nil && response.StatusCode >= http.StatusBadRequest && response.StatusCode < http.StatusInternalServerError {
+			return result(false, "", nativeBailianASRHandshakeError(response))
+		}
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		return result(false, "", "native voice infrastructure error: failed to dial upstream: "+sanitizeNativeBailianASRError(err.Error()))
+	}
+	defer conn.Close()
+
+	taskID := uuid.NewString()
+	request := nativeBailianASRProbeRequest{
+		Header: nativeBailianASRProbeHeader{Action: "run-task", TaskID: taskID, Streaming: "duplex"},
+	}
+	request.Payload.TaskGroup = "audio"
+	request.Payload.Task = "asr"
+	request.Payload.Function = "recognition"
+	request.Payload.Model = nativeBailianASRTestModel
+	request.Payload.Parameters.Format = "pcm"
+	request.Payload.Parameters.SampleRate = 16000
+	request.Payload.Input = map[string]any{}
+	if err := conn.WriteJSON(request); err != nil {
+		return result(false, "", "native voice infrastructure error: failed to write run-task: "+sanitizeNativeBailianASRError(err.Error()))
+	}
+
+	if err := conn.SetReadDeadline(time.Now().Add(nativeBailianASRTestTimeout)); err != nil {
+		return result(false, "", "native voice infrastructure error: failed to set read deadline")
+	}
+	for {
+		select {
+		case <-probeCtx.Done():
+			return result(false, "", "native voice infrastructure error: "+probeCtx.Err().Error())
+		default:
+		}
+		_, raw, err := conn.ReadMessage()
+		if err != nil {
+			return result(false, "", "native voice infrastructure error: failed to read task event: "+sanitizeNativeBailianASRError(err.Error()))
+		}
+
+		var event nativeBailianASRProbeEvent
+		if err := json.Unmarshal(raw, &event); err != nil {
+			return result(false, "", "native voice infrastructure error: invalid task event")
+		}
+		if event.Header.TaskID != taskID {
+			continue
+		}
+		switch event.Header.Event {
+		case "task-started":
+			return result(true, "native Bailian ASR task started", "")
+		case "task-failed":
+			errText := strings.Trim(strings.Join([]string{event.Header.ErrorCode, event.Header.ErrorMessage}, ": "), ": ")
+			if errText == "" {
+				errText = "native Bailian ASR task failed"
+			}
+			return result(false, "", sanitizeNativeBailianASRError(errText))
+		}
+	}
+}
+
+func nativeBailianASRWebSocketURL(ch *biz.Channel, endpoint objects.ChannelEndpoint) (string, error) {
+	baseURL := endpoint.BaseURL
+	if baseURL == "" && ch != nil {
+		baseURL = ch.BaseURL
+	}
+	parsed, err := url.Parse(strings.TrimSpace(baseURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", fmt.Errorf("invalid native Bailian ASR base URL")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "http":
+		parsed.Scheme = "ws"
+	case "https":
+		parsed.Scheme = "wss"
+	case "ws", "wss":
+	default:
+		return "", fmt.Errorf("invalid native Bailian ASR upstream scheme")
+	}
+	parsed.User = nil
+	parsed.RawQuery = ""
+	parsed.ForceQuery = false
+	parsed.Fragment = ""
+	parsed.RawPath = ""
+	parsed.Path = nativeBailianASRJoinPath(parsed.Path, endpoint.Path)
+	return parsed.String(), nil
+}
+
+func nativeBailianASRJoinPath(basePath, endpointPath string) string {
+	basePath = strings.Trim(strings.TrimSpace(basePath), "/")
+	endpointPath = strings.Trim(strings.TrimSpace(endpointPath), "/")
+	if basePath == "" {
+		return "/" + endpointPath
+	}
+	if endpointPath == "" {
+		return "/" + basePath
+	}
+	if endpointPath == basePath || strings.HasPrefix(endpointPath, basePath+"/") {
+		return "/" + endpointPath
+	}
+	return path.Join("/"+basePath, endpointPath)
+}
+
+func nativeBailianASRWebSocketDialer(ch *biz.Channel, override *httpclient.ProxyConfig) *websocket.Dialer {
+	dialer := *websocket.DefaultDialer
+	dialer.HandshakeTimeout = nativeBailianASRTestTimeout
+	if override != nil {
+		dialer.Proxy = httpclient.NewHttpClientWithProxy(override).ProxyFunc()
+		return &dialer
+	}
+	if ch != nil && ch.HTTPClient != nil {
+		dialer.Proxy = ch.HTTPClient.ProxyFunc()
+		if native := ch.HTTPClient.GetNativeClient(); native != nil {
+			if transport, ok := native.Transport.(*http.Transport); ok && transport.TLSClientConfig != nil {
+				dialer.TLSClientConfig = transport.TLSClientConfig.Clone()
+			}
+		}
+	}
+	return &dialer
+}
+
+func nativeBailianASRHandshakeError(response *http.Response) string {
+	if response == nil || response.Body == nil {
+		return "native Bailian ASR handshake failed"
+	}
+	defer response.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(response.Body, nativeBailianASRTestMaxErrorBody))
+	message := sanitizeNativeBailianASRError(string(body))
+	if message == "" {
+		message = http.StatusText(response.StatusCode)
+	}
+	return fmt.Sprintf("native Bailian ASR handshake HTTP %d: %s", response.StatusCode, message)
+}
+
+func sanitizeNativeBailianASRError(text string) string {
+	redacted := string(sanitizeResponseBody([]byte(text), nativeBailianASRTestMaxErrorBody))
+	return strings.TrimSpace(nativeBailianASRKeyPattern.ReplaceAllString(redacted, "[REDACTED]"))
 }
 
 // handleStreamResponse processes a streaming response and accumulates the content.
