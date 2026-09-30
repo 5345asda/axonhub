@@ -24,11 +24,10 @@ import (
 type NativeVoiceHandlersParams struct {
 	fx.In
 
-	ChannelService              *biz.ChannelService
-	RequestService              *biz.RequestService
-	SystemService               *biz.SystemService
-	ChannelLimiterManager       *orchestrator.ChannelLimiterManager
-	ProviderQuotaStatusProvider orchestrator.ProviderQuotaStatusProvider
+	ChannelService        *biz.ChannelService
+	RequestService        *biz.RequestService
+	SystemService         *biz.SystemService
+	ChannelLimiterManager *orchestrator.ChannelLimiterManager
 }
 
 func readNativeVoiceRequestBody(req *http.Request) ([]byte, error) {
@@ -85,7 +84,6 @@ func NewNativeVoiceHandlers(params NativeVoiceHandlersParams) *NativeVoiceHandle
 		orchestrator.NewWeightRoundRobinStrategy(nativeLoadTracker),
 		orchestrator.NewLatencyAwareStrategy(channelService),
 		orchestrator.NewRateLimitAwareStrategy(rateLimitTracker, params.ChannelLimiterManager),
-		orchestrator.NewQuotaAwareStrategy(params.ProviderQuotaStatusProvider, systemService),
 	)
 
 	selector := voice.NewCandidateSelector(channelService.GetEnabledChannels, loadBalancer.SortAllWithoutTracking)

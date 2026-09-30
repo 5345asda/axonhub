@@ -35,6 +35,7 @@ func TestServeNativeVoiceHTTPPersistsFailedBusinessAttempt(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Provider-Request-ID", "business-failure")
 		_, _ = w.Write([]byte(`{"base_resp":{"status_code":1004,"status_msg":"invalid voice"}}`))
 	}))
 	defer upstream.Close()
@@ -82,6 +83,7 @@ func TestServeNativeVoiceHTTPPersistsFailedBusinessAttempt(t *testing.T) {
 	require.Equal(t, "speech-2.8-hd", requests[0].ModelID)
 	require.JSONEq(t, body, string(requests[0].RequestBody))
 	require.Equal(t, "******", nativeVoiceStoredHeader(t, requests[0].RequestHeaders, "Authorization"))
+	require.Equal(t, "business-failure", nativeVoiceStoredHeader(t, requests[0].ResponseHeaders, "X-Provider-Request-ID"))
 
 	executions, err := client.RequestExecution.Query().All(ctx)
 	require.NoError(t, err)
@@ -98,6 +100,7 @@ func TestServeNativeVoiceHTTPPersistsFailedBusinessAttempt(t *testing.T) {
 	require.Contains(t, executions[0].ErrorMessage, "invalid voice")
 	require.JSONEq(t, body, string(executions[0].RequestBody))
 	require.Equal(t, "******", nativeVoiceStoredHeader(t, executions[0].RequestHeaders, "Authorization"))
+	require.Equal(t, "business-failure", nativeVoiceStoredHeader(t, executions[0].ResponseHeaders, "X-Provider-Request-ID"))
 }
 
 func TestServeNativeVoiceHTTPPersistsTransportFailure(t *testing.T) {
@@ -227,6 +230,7 @@ func TestServeNativeVoiceHTTPWritesBeforePersistingExecutions(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Provider-Request-ID", "success")
 		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0},"data":{"audio":"00"}}`))
 	}))
 	defer upstream.Close()
@@ -282,6 +286,12 @@ func TestServeNativeVoiceHTTPWritesBeforePersistingExecutions(t *testing.T) {
 	close(releasePersist)
 	<-done
 	require.Equal(t, http.StatusOK, w.Code)
+	request, err := client.Request.Query().Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "success", nativeVoiceStoredHeader(t, request.ResponseHeaders, "X-Provider-Request-ID"))
+	execution, err := client.RequestExecution.Query().Only(ctx)
+	require.NoError(t, err)
+	require.Equal(t, "success", nativeVoiceStoredHeader(t, execution.ResponseHeaders, "X-Provider-Request-ID"))
 }
 
 func TestNativeVoicePersistedURLStripsCredentialsAndQuery(t *testing.T) {

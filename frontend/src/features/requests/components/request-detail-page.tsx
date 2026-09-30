@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { getTokenFromStorage } from '@/stores/authStore';
 import { useSelectedProjectId } from '@/stores/projectStore';
+import { ensureFreshAccessToken } from '@/lib/auth-session';
 import { copyTextToClipboard } from '@/lib/clipboard';
 import { extractNumberID } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
@@ -118,6 +119,7 @@ async function readPreviewStream(
   }
 }
 
+/** Request detail page with live preview streaming. */
 export default function RequestDetailPage() {
   const { t } = useTranslation();
   const { requestId } = useParams({ from: '/_authenticated/project/requests/$requestId' });
@@ -133,6 +135,7 @@ export default function RequestDetailPage() {
   const [previewFallbackActive, setPreviewFallbackActive] = useState(false);
   const previewCompletedRef = useRef(false);
   const previewChunkCountRef = useRef(0);
+  const previousRequestIdRef = useRef<string | null>(null);
 
   const { data: requestData, refetch: refetchRequest } = useRequest(requestId, {
     projectId: selectedProjectId,
@@ -145,13 +148,29 @@ export default function RequestDetailPage() {
     if (!requestData) {
       setPreviewRequest(null);
       setPreviewFallbackActive(false);
+      previousRequestIdRef.current = null;
       return;
     }
 
+    const isSameRequest = previousRequestIdRef.current === requestData.id;
+    previousRequestIdRef.current = requestData.id;
+
     if (requestData.status !== 'processing' || !requestData.stream) {
-      setPreviewRequest(null);
-      setIsPreviewStreaming(false);
-      setPreviewFallbackActive(false);
+      if (isSameRequest && previewRequest?.responseChunks?.length) {
+        setIsPreviewStreaming(false);
+        setPreviewFallbackActive(false);
+        setPreviewRequest((current) => {
+          if (!current) return null;
+          return {
+            ...requestData,
+            responseChunks: current.responseChunks,
+          };
+        });
+      } else {
+        setPreviewRequest(null);
+        setIsPreviewStreaming(false);
+        setPreviewFallbackActive(false);
+      }
       previewCompletedRef.current = false;
       previewChunkCountRef.current = 0;
     }
@@ -234,9 +253,15 @@ export default function RequestDetailPage() {
 
     async function connectPreview() {
       try {
+        const currentToken = await ensureFreshAccessToken();
+        if (!currentToken) {
+          setIsPreviewStreaming(false);
+          setPreviewRequest(null);
+          return;
+        }
         const response = await fetch(`/admin/requests/${encodeURIComponent(requestIdNumber)}/preview`, {
           headers: {
-            Authorization: `Bearer ${token}`,
+            Authorization: `Bearer ${currentToken}`,
             'X-Project-ID': selectedProjectId,
           },
           signal: controller.signal,
@@ -379,7 +404,13 @@ export default function RequestDetailPage() {
                 </h1>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Button variant='ghost' size='icon-sm' className='h-7 w-7' onClick={() => void copyRequestID()} aria-label={t('requests.actions.copyRequestId')}>
+                    <Button
+                      variant='ghost'
+                      size='icon-sm'
+                      className='h-7 w-7'
+                      onClick={() => void copyRequestID()}
+                      aria-label={t('requests.actions.copyRequestId')}
+                    >
                       <Copy className='h-3.5 w-3.5' />
                     </Button>
                   </TooltipTrigger>

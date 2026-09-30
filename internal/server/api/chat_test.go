@@ -26,10 +26,33 @@ import (
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/pipeline"
 	"github.com/looplj/axonhub/llm/streams"
+	"github.com/looplj/axonhub/llm/transformer/openai/codex"
 )
 
 func init() {
 	gin.SetMode(gin.TestMode)
+}
+
+func TestPrimeCodexTurnStateHeader(t *testing.T) {
+	first := &httpclient.StreamEvent{
+		Type: "response.created",
+		Data: []byte(`{"type":"response.created"}`),
+		Headers: http.Header{
+			codex.TurnStateHeader: []string{"ts-1"},
+		},
+	}
+	second := &httpclient.StreamEvent{Type: "response.completed", Data: []byte(`{"type":"response.completed"}`)}
+	downstreamHeaders := make(http.Header)
+
+	stream := primeCodexTurnStateHeader(downstreamHeaders, streams.SliceStream([]*httpclient.StreamEvent{first, second}))
+	require.Equal(t, "ts-1", downstreamHeaders.Get(codex.TurnStateHeader))
+
+	var events []*httpclient.StreamEvent
+	for stream.Next() {
+		events = append(events, stream.Current())
+	}
+	require.NoError(t, stream.Err())
+	require.Equal(t, []*httpclient.StreamEvent{first, second}, events)
 }
 
 func setupUpstreamErrorPolicyTest(t *testing.T, policy biz.UpstreamErrorPolicy) (context.Context, *biz.SystemService) {
@@ -299,6 +322,71 @@ func TestWriteSSEStream_Success(t *testing.T) {
 	body := w.Body.String()
 	assert.Contains(t, body, `{"id":"1","choices":[{"delta":{"content":"Hi"}}]}`)
 	assert.Contains(t, body, `[DONE]`)
+}
+
+func TestWriteForwardResponseHeadersOnlyForCodexResponses(t *testing.T) {
+	result := orchestrator.ChatCompletionResult{
+		ChatCompletion: &httpclient.Response{
+			Headers: http.Header{httpclient.ReasoningIncludedHeader: []string{"true"}},
+		},
+		CodexResponseHeadersSupported: true,
+	}
+
+	tests := []struct {
+		name    string
+		request *httpclient.Request
+		want    string
+	}{
+		{
+			name:    "chat completions",
+			request: &httpclient.Request{Path: "/v1/chat/completions"},
+		},
+		{
+			name:    "responses without codex session",
+			request: &httpclient.Request{Path: "/v1/responses"},
+		},
+		{
+			name: "codex responses",
+			request: &httpclient.Request{
+				Path: "/v1/responses",
+				Headers: http.Header{
+					codex.TurnMetadataHeader: []string{`{"session_id":"session-1"}`},
+				},
+			},
+			want: "true",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+
+			writeForwardResponseHeaders(c, tt.request, result)
+
+			require.Equal(t, tt.want, w.Header().Get(httpclient.ReasoningIncludedHeader))
+		})
+	}
+}
+
+func TestWriteForwardResponseHeadersRejectsUnsupportedOutbound(t *testing.T) {
+	result := orchestrator.ChatCompletionResult{
+		ChatCompletion: &httpclient.Response{
+			Headers: http.Header{httpclient.ReasoningIncludedHeader: []string{"true"}},
+		},
+	}
+	request := &httpclient.Request{
+		Path: "/v1/responses",
+		Headers: http.Header{
+			codex.TurnMetadataHeader: []string{`{"session_id":"session-1"}`},
+		},
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	writeForwardResponseHeaders(c, request, result)
+
+	require.Empty(t, w.Header().Get(httpclient.ReasoningIncludedHeader))
 }
 
 func TestWriteSSEStream_WriteErrorStopsConsuming(t *testing.T) {
@@ -1193,6 +1281,44 @@ func TestWriteSSEStream_TerminalEventWinsDeadlineRace(t *testing.T) {
 	require.NotContains(t, w.Body.String(), "event:error")
 }
 
+func TestWriteSSEStream_ResponsesErrorAfterTerminalIsSuppressed(t *testing.T) {
+	tests := []struct {
+		name      string
+		keepAlive SSEKeepAliveConfig
+	}{
+		{name: "without heartbeat"},
+		{
+			name: "with heartbeat",
+			keepAlive: SSEKeepAliveConfig{
+				Enabled:  true,
+				Interval: time.Hour,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+			stream := &errorAfterStream{
+				items: []*httpclient.StreamEvent{
+					{Type: "response.created", Data: []byte(`{"type":"response.created"}`)},
+					{Type: "response.completed", Data: []byte(`{"type":"response.completed","response":{"status":"completed"}}`)},
+				},
+				err: fmt.Errorf("read body: %w", io.ErrUnexpectedEOF),
+			}
+
+			writeSSEStream(c, stream, FormatStreamError, tt.keepAlive, sseHeartbeatOpenAI)
+
+			body := w.Body.String()
+			require.Contains(t, body, "response.completed")
+			require.NotContains(t, body, "event:error")
+			require.NotContains(t, body, io.ErrUnexpectedEOF.Error())
+		})
+	}
+}
+
 func TestWriteSSEStream_RefreshesWriteDeadline(t *testing.T) {
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -1276,4 +1402,44 @@ func TestUpstreamErrorStream_PassthroughClassifiesTransportError(t *testing.T) {
 	stream = newUpstreamErrorStream(ctx, &errorAfterStream{err: plain}, systemService)
 	require.False(t, stream.Next())
 	assert.Equal(t, plain, stream.Err())
+}
+
+func TestWriteSSEStream_StandaloneErrorIsTerminal(t *testing.T) {
+	for _, event := range []*httpclient.StreamEvent{
+		{Type: "error", Data: []byte(`{"error":{"message":"provider failed"}}`)},
+		{Data: []byte(`{"type":"error","error":{"message":"provider failed"}}`)},
+	} {
+		name := "json_type"
+		if event.Type != "" {
+			name = "sse_type"
+		}
+		t.Run(name, func(t *testing.T) {
+			for _, heartbeat := range []bool{false, true} {
+				name := "without_heartbeat"
+				if heartbeat {
+					name = "with_heartbeat"
+				}
+				t.Run(name, func(t *testing.T) {
+					for _, streamErr := range []error{nil, io.ErrUnexpectedEOF} {
+						name := "clean_eof"
+						if streamErr != nil {
+							name = "transport_error"
+						}
+						t.Run(name, func(t *testing.T) {
+							w := httptest.NewRecorder()
+							c, _ := gin.CreateTestContext(w)
+							c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+							stream := &errorAfterStream{items: []*httpclient.StreamEvent{event}, err: streamErr}
+							writeSSEStream(c, stream, FormatStreamError, SSEKeepAliveConfig{Enabled: heartbeat, Interval: time.Hour}, sseHeartbeatOpenAI)
+							body := w.Body.String()
+							require.Equal(t, 1, strings.Count(body, "data:"))
+							require.Contains(t, body, string(event.Data))
+							require.NotContains(t, body, orchestrator.ErrStreamIncomplete.Error())
+							require.NotContains(t, body, io.ErrUnexpectedEOF.Error())
+						})
+					}
+				})
+			}
+		})
+	}
 }

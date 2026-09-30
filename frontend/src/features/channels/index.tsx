@@ -1,11 +1,11 @@
-import { useState, useMemo, useCallback, useEffect, lazy, Suspense } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef, lazy, Suspense } from 'react';
 import { SortingState } from '@tanstack/react-table';
 import { useTranslation } from 'react-i18next';
 import { useDebounce } from '@/hooks/use-debounce';
 import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import { usePermissions } from '@/hooks/usePermissions';
-import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { PageHeader } from '@/components/layout/page-header';
 import { createColumns } from './components/channels-columns';
 import { ChannelsErrorBanner } from './components/channels-error-banner';
 import { ChannelsPrimaryButtons } from './components/channels-primary-buttons';
@@ -22,13 +22,32 @@ import {
   type ChannelListColumnVisibility,
 } from './data/channels';
 import { useProvidersData } from '@/features/models/data/providers';
+import { useQuotaRoutingSettings } from '@/features/system/data/system';
+import { useQueryClient } from '@tanstack/react-query';
+import { useAuthStore } from '@/stores/authStore';
 
 const ChannelsDialogs = lazy(() => import('./components/channels-dialogs').then((m) => ({ default: m.ChannelsDialogs })));
 
 function ChannelsContent() {
   const { t } = useTranslation();
   useProvidersData();
-  const { channelPermissions } = usePermissions();
+  const { channelPermissions, hasSystemScope } = usePermissions();
+  const { data: quotaRoutingSettings } = useQuotaRoutingSettings();
+  const queryClient = useQueryClient();
+  const authUserId = useAuthStore((state) => state.auth.user?.id);
+  const canReadSystemSettings = hasSystemScope('read_settings');
+  const quotaRoutingCacheKey = `${authUserId ?? 'signed-out'}:${canReadSystemSettings}`;
+  const previousQuotaRoutingCacheKey = useRef<string | undefined>(undefined);
+  const currentQuotaRoutingSettings = previousQuotaRoutingCacheKey.current === quotaRoutingCacheKey ? quotaRoutingSettings : undefined;
+  useEffect(() => {
+    if (previousQuotaRoutingCacheKey.current == null) {
+      previousQuotaRoutingCacheKey.current = quotaRoutingCacheKey;
+      return;
+    }
+    if (previousQuotaRoutingCacheKey.current === quotaRoutingCacheKey) return;
+    previousQuotaRoutingCacheKey.current = quotaRoutingCacheKey;
+    void queryClient.removeQueries({ queryKey: ['quotaRoutingSettings'] });
+  }, [queryClient, quotaRoutingCacheKey]);
   const { showTypeTabs } = useChannels();
   const { pageSize, setCursors, setPageSize, resetCursor, paginationArgs } = usePaginationSearch({
     defaultPageSize: 20,
@@ -258,7 +277,10 @@ function ChannelsContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const columns = useMemo(() => createColumns(t, channelPermissions.canWrite), [t, channelPermissions.canWrite]);
+  const columns = useMemo(
+     () => createColumns(t, channelPermissions.canWrite, currentQuotaRoutingSettings?.defaultMode),
+     [t, channelPermissions.canWrite, currentQuotaRoutingSettings?.defaultMode]
+  );
 
   return (
     <div className='flex min-w-0 flex-1 flex-col overflow-hidden'>
@@ -308,15 +330,7 @@ export default function ChannelsManagement() {
 
   return (
     <ChannelsProvider>
-      <Header fixed>
-        <div className='flex w-full flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-0'>
-          <div className='min-w-0'>
-            <h2 className='text-xl font-bold tracking-tight'>{t('channels.title')}</h2>
-            <p className='text-sm text-muted-foreground'>{t('channels.description')}</p>
-          </div>
-          <ChannelsPrimaryButtons />
-        </div>
-      </Header>
+      <PageHeader title={t('channels.title')} description={t('channels.description')} actions={<ChannelsPrimaryButtons />} actionLayout='scroll' />
 
       <Main fixed>
         <ChannelsContent />

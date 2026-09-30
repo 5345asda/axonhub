@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import test from 'node:test';
 import ts from 'typescript';
 
 const dataDir = import.meta.dirname;
@@ -16,7 +16,7 @@ function read(relativePath) {
 // imports are resolved by stubbing the imported bindings on globalThis before
 // evaluation via an injected prelude.
 function loadModule(relativePath, transform = (s) => s) {
-  const source = transform(read(relativePath)).replace(/^import[^\n]*\n/gm, '');
+  const source = transform(read(relativePath)).replace(/^import(?:[\s\S]*?from\s+)?\s*['"][^'"]+['"];\r?\n?/gm, '');
   const transpiled = ts.transpileModule(source, {
     compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
   }).outputText;
@@ -26,7 +26,7 @@ function loadModule(relativePath, transform = (s) => s) {
 
 const { z } = await import('zod');
 globalThis.__importStubs = { z, pageInfoSchema: undefined };
-const paginationSource = read('gql/pagination.ts').replace(/^import[^\n]*\n/gm, '');
+const paginationSource = read('gql/pagination.ts').replace(/^import(?:[\s\S]*?from\s+)?\s*['"][^'"]+['"];\r?\n?/gm, '');
 const paginationTranspiled = ts.transpileModule(paginationSource, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
 }).outputText;
@@ -41,14 +41,14 @@ const { parseQuotaLimits } = await loadModule('features/system/data/quotas.ts', 
 
 const { channelSchema } = await loadModule('features/channels/data/schema.ts', (s) => s.replace(/z\.url\(/g, 'z.string().url('));
 
-const channelQuerySource = read('features/channels/data/channels.ts').replace(/^import(?:.|\n)*?;\n/gm, '');
+const channelQuerySource = read('features/channels/data/channels.ts').replace(/^import(?:[\s\S]*?from\s+)?\s*['"][^'"]+['"];\r?\n?/gm, '');
 const channelQueryTranspiled = ts.transpileModule(channelQuerySource, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
 }).outputText;
 const { buildQueryChannelsQuery } = await import(
-  `data:text/javascript;base64,${Buffer.from(
-    'const { z, pageInfoSchema } = globalThis.__importStubs;\n' + channelQueryTranspiled
-  ).toString('base64')}`
+  `data:text/javascript;base64,${Buffer.from('const { z, pageInfoSchema } = globalThis.__importStubs;\n' + channelQueryTranspiled).toString(
+    'base64'
+  )}`
 );
 
 const columnsSource = read('features/channels/components/channels-columns.tsx');
@@ -96,7 +96,10 @@ test('Codex Pro seven-day-only data keeps its seven-day label', () => {
     _limits: [{ type: 'token', window: '7d', usageRatio: 0.4, status: 'available', ready: true }],
   });
 
-  assert.deepEqual(limits.map((limit) => limit.window), ['7d']);
+  assert.deepEqual(
+    limits.map((limit) => limit.window),
+    ['7d']
+  );
   assert.notEqual(limits[0].window, '5h');
 });
 
@@ -111,7 +114,13 @@ test('normalized limits: unknown window strings pass through neutrally', () => {
 
 test('normalized limits: malformed entries do not throw and are defensively typed', () => {
   const limits = parseQuotaLimits({
-    _limits: [null, 42, 'broken', { window: 7, usageRatio: 'lots' }, { type: 'token', window: 'daily', usageRatio: 0.1, status: 'available' }],
+    _limits: [
+      null,
+      42,
+      'broken',
+      { window: 7, usageRatio: 'lots' },
+      { type: 'token', window: 'daily', usageRatio: 0.1, status: 'available' },
+    ],
   });
 
   assert.ok(Array.isArray(limits));
@@ -192,16 +201,12 @@ test('no provider fallback: channels table renders quota for any channel type wi
     /OAUTH_CHANNEL_TYPES/,
     'the channel table must not gate quota rendering behind an OAuth channel allowlist'
   );
-  assert.match(
-    columnsSource,
-    /parseQuotaLimits/,
-    'the channel table should consume the shared provider-neutral normalized-limit parser'
-  );
+  assert.match(columnsSource, /parseQuotaLimits/, 'the channel table should consume the shared provider-neutral normalized-limit parser');
 });
 
 test('no provider fallback: quota cell has no provider-specific raw-data parsing branches', () => {
   const quotaCellStart = columnsSource.indexOf('const QuotaCell');
-  const quotaCellEnd = columnsSource.indexOf("QuotaCell.displayName", quotaCellStart);
+  const quotaCellEnd = columnsSource.indexOf('QuotaCell.displayName', quotaCellStart);
   assert.ok(quotaCellStart !== -1 && quotaCellEnd > quotaCellStart, 'QuotaCell should exist');
   const quotaCell = columnsSource.slice(quotaCellStart, quotaCellEnd);
 
@@ -248,12 +253,14 @@ test('unknown usage: limits with missing usage fail closed without rendering exh
   }
 });
 
-test('hidden quota selection removes only quota fields from the real query', () => {
+test('hidden quota selection keeps routing status fields for the channel name', () => {
   const visibleQuery = buildQueryChannelsQuery({ quota: true, tags: false });
   const hiddenQuery = buildQueryChannelsQuery({ quota: false, tags: false });
 
   assert.match(visibleQuery, /providerQuotaStatus/);
-  assert.doesNotMatch(hiddenQuery, /providerQuotaStatus/);
+  assert.match(hiddenQuery, /providerQuotaStatus/);
+  assert.match(hiddenQuery, /status/);
+  assert.doesNotMatch(hiddenQuery, /nextResetAt/);
   assert.match(hiddenQuery, /supportedModels/);
   assert.match(hiddenQuery, /liveLimiterStats/);
 });
@@ -272,8 +279,14 @@ test('more than five normalized limits expose the remaining rows for expansion',
   const columns = columnsSource.slice(columnsSource.indexOf('const QuotaCell'), columnsSource.indexOf('QuotaCell.displayName'));
 
   assert.equal(limits.length, 6);
-  assert.deepEqual(limits.slice(0, 5).map((limit) => limit.window), ['5h', '7d', '30d', 'daily', 'weekly']);
-  assert.deepEqual(limits.map((limit) => limit.window), ['5h', '7d', '30d', 'daily', 'weekly', 'monthly']);
+  assert.deepEqual(
+    limits.slice(0, 5).map((limit) => limit.window),
+    ['5h', '7d', '30d', 'daily', 'weekly']
+  );
+  assert.deepEqual(
+    limits.map((limit) => limit.window),
+    ['5h', '7d', '30d', 'daily', 'weekly', 'monthly']
+  );
   assert.match(columns, /const visibleLimits = isExpanded \? limits : limits\.slice\(0, QUOTA_VISIBLE_LIMIT\)/);
   assert.match(columns, /const hiddenCount = limits\.length - QUOTA_VISIBLE_LIMIT/);
 });

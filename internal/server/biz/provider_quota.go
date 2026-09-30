@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -75,6 +74,8 @@ var providerQuotaChannelTypes = []channel.Type{
 	channel.TypeMinimaxAnthropic,
 	channel.TypeZhipu,
 	channel.TypeZhipuAnthropic,
+	channel.TypeZai,
+	channel.TypeZaiAnthropic,
 	channel.TypeCommandcode,
 	channel.TypeCommandcodeAnthropic,
 	channel.TypeOllama,
@@ -131,6 +132,35 @@ type QuotaChannelStatus struct {
 	Limits       []provider_quota.QuotaLimitStatus
 }
 
+func cloneQuotaLimitStatus(limit provider_quota.QuotaLimitStatus) provider_quota.QuotaLimitStatus {
+	clone := limit
+	if limit.NextResetAt != nil {
+		clone.NextResetAt = lo.ToPtr(*limit.NextResetAt)
+	}
+	if limit.PeriodStart != nil {
+		clone.PeriodStart = lo.ToPtr(*limit.PeriodStart)
+	}
+	if limit.PeriodCost != nil {
+		clone.PeriodCost = lo.ToPtr(*limit.PeriodCost)
+	}
+	if limit.PeriodQuota != nil {
+		clone.PeriodQuota = lo.ToPtr(*limit.PeriodQuota)
+	}
+	return clone
+}
+
+func cloneLimits(limits []provider_quota.QuotaLimitStatus) []provider_quota.QuotaLimitStatus {
+	if limits == nil {
+		return nil
+	}
+
+	clones := make([]provider_quota.QuotaLimitStatus, len(limits))
+	for i, limit := range limits {
+		clones[i] = cloneQuotaLimitStatus(limit)
+	}
+	return clones
+}
+
 // EffectiveStatus returns the effective quota status for the given limit type.
 //
 // If the channel-level status is Exhausted, it short-circuits regardless of
@@ -139,96 +169,7 @@ type QuotaChannelStatus struct {
 // "exhausted" for a single limit type (e.g., images), token-limit queries
 // would also return "exhausted" even if tokens remain.
 func (s *QuotaChannelStatus) EffectiveStatus(limitType provider_quota.QuotaLimitType) (providerquotastatus.Status, bool) {
-	if s.Status == providerquotastatus.StatusExhausted {
-		return providerquotastatus.StatusExhausted, false
-	}
-
-	if len(s.Limits) == 0 {
-		return s.Status, s.Ready
-	}
-
-	var worstStatus providerquotastatus.Status
-	worstReady := true
-	found := false
-	groupNames := make(map[string]bool)
-	grouped := make(map[string][]provider_quota.QuotaLimitStatus)
-
-	for _, l := range s.Limits {
-		if l.Type != limitType || l.AvailabilityGroup == "" {
-			continue
-		}
-		groupNames[l.AvailabilityGroup] = true
-	}
-
-	for _, l := range s.Limits {
-		if l.Type != limitType && !groupNames[l.AvailabilityGroup] {
-			continue
-		}
-
-		if groupNames[l.AvailabilityGroup] {
-			grouped[l.AvailabilityGroup] = append(grouped[l.AvailabilityGroup], l)
-			continue
-		}
-
-		ls := providerquotastatus.Status(l.Status)
-		if !found || quotaStatusRank(ls) > quotaStatusRank(worstStatus) {
-			worstStatus = ls
-			worstReady = l.Ready
-			found = true
-		} else if quotaStatusRank(ls) == quotaStatusRank(worstStatus) {
-			worstReady = worstReady && l.Ready
-		}
-	}
-
-	for _, limits := range grouped {
-		bestStatus := providerquotastatus.StatusUnknown
-		bestReady := false
-		groupFound := false
-		for _, l := range limits {
-			ls := providerquotastatus.Status(l.Status)
-			if !groupFound ||
-				(l.Ready && !bestReady) ||
-				(l.Ready == bestReady && quotaStatusRank(ls) < quotaStatusRank(bestStatus)) {
-				bestStatus = ls
-				bestReady = l.Ready
-				groupFound = true
-			} else if quotaStatusRank(ls) == quotaStatusRank(bestStatus) {
-				bestReady = bestReady || l.Ready
-			}
-		}
-
-		if !found || quotaStatusRank(bestStatus) > quotaStatusRank(worstStatus) {
-			worstStatus = bestStatus
-			worstReady = bestReady
-			found = true
-		} else if quotaStatusRank(bestStatus) == quotaStatusRank(worstStatus) {
-			worstReady = worstReady && bestReady
-		}
-	}
-
-	if !found {
-		// No matching limit type: return Unknown with ready=true so the channel
-		// is not filtered out. This differs from a per-limit "unknown" status
-		// (where ready=false) because missing data should not block routing.
-		return providerquotastatus.StatusUnknown, true
-	}
-
-	return worstStatus, worstReady
-}
-
-func quotaStatusRank(s providerquotastatus.Status) int {
-	switch s {
-	case providerquotastatus.StatusAvailable:
-		return 0
-	case providerquotastatus.StatusWarning:
-		return 1
-	case providerquotastatus.StatusExhausted:
-		return 2
-	case providerquotastatus.StatusUnknown:
-		return -1
-	default:
-		return -1
-	}
+	return provider_quota.EffectiveStatus(s.Limits, s.Status, s.Ready, limitType)
 }
 
 // HOW TO ADD A NEW PROVIDER QUOTA CHECKER
@@ -451,6 +392,7 @@ func (svc *ProviderQuotaService) registerProviderQuotaSupport() {
 	svc.registerKimiCodeSupport()
 	svc.registerMinimaxSupport()
 	svc.registerZhipuSupport()
+	svc.registerZaiSupport()
 	svc.registerCharmHyperSupport()
 	svc.registerCommandCodeSupport()
 	svc.registerOllamaSupport()
@@ -538,6 +480,10 @@ func (svc *ProviderQuotaService) registerZhipuSupport() {
 	svc.checkers["zhipu"] = provider_quota.NewZhipuQuotaChecker(svc.httpClient)
 }
 
+func (svc *ProviderQuotaService) registerZaiSupport() {
+	svc.checkers["zai"] = provider_quota.NewZaiQuotaChecker(svc.httpClient)
+}
+
 func (svc *ProviderQuotaService) registerCharmHyperSupport() {
 	svc.checkers["charm_hyper"] = provider_quota.NewCharmHyperQuotaChecker(svc.httpClient)
 }
@@ -614,7 +560,7 @@ func (svc *ProviderQuotaService) loadQuotaCache(ctx context.Context) {
 			ProviderType: r.ProviderType.String(),
 			Status:       r.Status,
 			Ready:        r.Ready,
-			Limits:       extractLimitsFromQuotaData(r.QuotaData),
+			Limits:       cloneLimits(extractLimitsFromQuotaData(r.QuotaData)),
 		})
 	}
 
@@ -638,7 +584,12 @@ func (svc *ProviderQuotaService) GetQuotaStatus(ctx context.Context, channelID i
 		}
 	}
 
-	return status
+	return &QuotaChannelStatus{
+		ProviderType: status.ProviderType,
+		Status:       status.Status,
+		Ready:        status.Ready,
+		Limits:       cloneLimits(status.Limits),
+	}
 }
 
 func (svc *ProviderQuotaService) updateQuotaCache(channelID int, providerType string, status providerquotastatus.Status, ready bool, limits []provider_quota.QuotaLimitStatus) {
@@ -646,7 +597,7 @@ func (svc *ProviderQuotaService) updateQuotaCache(channelID int, providerType st
 		ProviderType: providerType,
 		Status:       status,
 		Ready:        ready,
-		Limits:       limits,
+		Limits:       cloneLimits(limits),
 	})
 }
 
@@ -909,7 +860,7 @@ func (svc *ProviderQuotaService) checkChannelQuota(ctx context.Context, group qu
 
 	for _, member := range group.channels {
 		memberQuotaData := quotaData
-		memberQuotaData.Limits = slices.Clone(quotaData.Limits)
+		memberQuotaData.Limits = cloneLimits(quotaData.Limits)
 		svc.fillPeriodQuotas(ctx, member.ID, &memberQuotaData, now)
 		svc.saveQuotaStatus(ctx, member.ID, providerType, group.accountKey, memberQuotaData, now)
 
@@ -1095,6 +1046,8 @@ func (svc *ProviderQuotaService) getProviderType(ch *ent.Channel) string {
 		return "minimax"
 	case channel.TypeZhipu, channel.TypeZhipuAnthropic:
 		return "zhipu"
+	case channel.TypeZai, channel.TypeZaiAnthropic:
+		return "zai"
 	case channel.TypeCommandcode, channel.TypeCommandcodeAnthropic:
 		return "commandcode"
 	case channel.TypeOllama, channel.TypeOllamaAnthropic:
@@ -1135,14 +1088,9 @@ func hasCredentialsForProvider(ch *ent.Channel) bool {
 	}
 
 	if isCommandCodeChannelType(ch.Type) {
-		// Command Code quota collection is authenticated with the account
-		// session cookie, never the inference API key.
-		if ch.Settings == nil || ch.Settings.ProviderQuota == nil || ch.Settings.ProviderQuota.CommandCode == nil {
-			return false
-		}
-
-		_, err := provider_quota.NormalizeCommandCodeCookie(ch.Settings.ProviderQuota.CommandCode.AuthCookie)
-		return err == nil
+		// Command Code quota collection authenticates with the account API key
+		// (/alpha/billing/*), or with the Studio session cookie as a fallback.
+		return provider_quota.HasCommandCodeQuotaCredentials(ch)
 	}
 
 	if ch.Type == channel.TypeOllama || ch.Type == channel.TypeOllamaAnthropic {
@@ -1180,6 +1128,12 @@ func (svc *ProviderQuotaService) mergeLimitsIntoQuotaData(quotaData provider_quo
 			}
 			if l.Window != "" {
 				m["window"] = l.Window
+			}
+			if l.Account != "" {
+				m["account"] = l.Account
+			}
+			if l.AvailabilityGroup != "" {
+				m["availabilityGroup"] = l.AvailabilityGroup
 			}
 			if l.PeriodStart != nil {
 				m["periodStart"] = l.PeriodStart.Format(time.RFC3339)
@@ -1248,6 +1202,14 @@ func extractLimitsFromQuotaData(data map[string]any) []provider_quota.QuotaLimit
 
 		if w, ok := m["window"].(string); ok {
 			ls.Window = w
+		}
+
+		if a, ok := m["account"].(string); ok {
+			ls.Account = a
+		}
+
+		if g, ok := m["availabilityGroup"].(string); ok {
+			ls.AvailabilityGroup = g
 		}
 
 		if ts, ok := m["periodStart"].(string); ok {

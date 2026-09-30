@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { graphqlRequest } from '@/gql/graphql';
+import type { ChannelQuotaRoutingMode } from '@/features/channels/data/schema';
 
 const CHECK_PROVIDER_QUOTAS_QUERY = `
   mutation CheckProviderQuotas {
@@ -21,6 +22,9 @@ const PROVIDER_QUOTA_STATUSES_QUERY = `
           id
           name
           type
+          settings {
+            quotaRoutingMode
+          }
           providerQuotaStatus {
             status
             nextResetAt
@@ -299,11 +303,29 @@ export type ZhipuWindowRow = {
   usedPercent: number;
   status: string;
   resetAt?: string;
+  usage?: number;
+  used?: number;
+  remaining?: number;
+};
+
+// One API key of a channel that draws from several accounts. The backend keeps
+// every account of a multi-key channel in this shape so the UI can render them
+// side by side.
+export type ZhipuAccountQuota = {
+  ref?: string;
+  suffix?: string;
+  disabled?: boolean;
+  status?: string;
+  ready?: boolean;
+  level?: string;
+  error?: string;
+  rows?: ZhipuWindowRow[];
 };
 
 export type ProviderZhipuQuotaData = ProviderQuotaDataCommon & {
   rows?: ZhipuWindowRow[];
   level?: string;
+  accounts?: ZhipuAccountQuota[];
 };
 
 export type ProviderZenmuxQuotaPlan = {
@@ -480,6 +502,7 @@ export type ProviderQuotaLimit = {
   usageRatio: number;
   ready: boolean;
   window?: string;
+  account?: string;
   nextResetAt?: string;
   periodStart?: string;
   periodCost?: number;
@@ -511,6 +534,7 @@ function parseQuotaLimit(entry: unknown): ProviderQuotaLimit | undefined {
   const limit = entry as Record<string, unknown>;
   const type = requiredString(limit.type);
   const window = requiredString(limit.window);
+  const account = optionalString(limit.account);
   if (!type || !window || !isNormalizedQuotaStatus(limit.status)) return undefined;
 
   const usageRatio = optionalNumber(limit.usageRatio);
@@ -537,6 +561,7 @@ function parseQuotaLimit(entry: unknown): ProviderQuotaLimit | undefined {
     usageRatio,
     ready: limit.ready === true,
     window,
+    account,
     nextResetAt,
     periodStart,
     periodCost,
@@ -632,6 +657,8 @@ export type ProviderQuotaChannel = {
   // Names of the channels sharing this account, only set on the representative
   // entry built by the quota popover grouping.
   sharedAccountNames?: string[];
+  // Quota routing mode declared on the channel settings; INHERIT defers to the global default.
+  quotaRoutingMode: ChannelQuotaRoutingMode;
   quotaStatus: {
     status: 'available' | 'warning' | 'exhausted' | 'unknown';
     nextResetAt: string | null;
@@ -701,6 +728,12 @@ export type ProviderQuotaChannel = {
     }
   | {
       type: 'zhipu' | 'zhipu_anthropic';
+      quotaStatus: {
+        quotaData: ProviderZhipuQuotaData;
+      };
+    }
+  | {
+      type: 'zai' | 'zai_anthropic';
       quotaStatus: {
         quotaData: ProviderZhipuQuotaData;
       };
@@ -780,6 +813,7 @@ type QueryChannelNode = {
   id: string;
   name: string;
   type: string;
+  settings: { quotaRoutingMode: ChannelQuotaRoutingMode } | null;
   providerQuotaStatus: ProviderQuotaStatusNode | null;
 };
 
@@ -806,6 +840,7 @@ function parseChannelNode(node: QueryChannelNodeWithQuota): ProviderQuotaChannel
   const base = {
     id: node.id,
     name: node.name,
+    quotaRoutingMode: node.settings?.quotaRoutingMode ?? 'INHERIT',
     accountKey: optionalString(quotaStatus.accountKey),
     quotaStatus: {
       status: quotaStatus.status,
@@ -899,6 +934,13 @@ function parseChannelNode(node: QueryChannelNodeWithQuota): ProviderQuotaChannel
     return {
       ...base,
       type: node.type as 'zhipu' | 'zhipu_anthropic',
+      quotaStatus: { ...base.quotaStatus, quotaData: node.providerQuotaStatus.quotaData as ProviderZhipuQuotaData },
+    };
+  }
+  if (node.type === 'zai' || node.type === 'zai_anthropic') {
+    return {
+      ...base,
+      type: node.type as 'zai' | 'zai_anthropic',
       quotaStatus: { ...base.quotaStatus, quotaData: node.providerQuotaStatus.quotaData as ProviderZhipuQuotaData },
     };
   }

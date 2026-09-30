@@ -67,6 +67,7 @@ type TransformOptions {
 type SyncChannelModelsPayload {
   channelID: ID!
   supportedModels: [String!]!
+  manualModels: [String!]!
 }
 
 input ReasoningEffortMappingInput {
@@ -114,6 +115,24 @@ input ChannelEndpointInput {
 input SaveChannelEndpointsInput {
   channelID: ID!
   endpoints: [ChannelEndpointInput!]!
+}
+
+# DetectChannelEndpoints probes the upstream for the relay protocols a channel
+# can expose (chat completions, responses, messages) without persisting them.
+input DetectChannelEndpointsInput {
+  channelID: ID!
+  model: String
+}
+
+type DetectedChannelEndpoint {
+  apiFormat: String!
+  supported: Boolean!
+  statusCode: Int
+  reason: String!
+}
+
+type DetectChannelEndpointsPayload {
+  endpoints: [DetectedChannelEndpoint!]!
 }
 
 input ProxyConfigInput {
@@ -194,6 +213,14 @@ type ChannelSettings {
   retryableErrorPatterns: [RetryableErrorPattern!]
   modelProtocols: [ModelProtocol!]
   providerQuota: ChannelProviderQuotaSettings @goField(forceResolver: true)
+  quotaRoutingMode: ChannelQuotaRoutingMode
+}
+
+enum ChannelQuotaRoutingMode {
+  INHERIT
+  IGNORE_QUOTA
+  REMOVE_ON_EXHAUSTED
+  BACKPRESSURE
 }
 
 enum CapabilityPolicy {
@@ -207,6 +234,12 @@ enum APIKeyAutoDisableAction {
   disable_until_cron
   permanent_disable
   permanent_disable_delete
+}
+
+enum APIKeyAutoDisableMode {
+  inherit
+  custom
+  off
 }
 
 type APIKeyAutoDisableRule {
@@ -231,11 +264,13 @@ input APIKeyAutoDisableRuleInput {
 
 type ChannelPolicies {
   stream: CapabilityPolicy
+  apiKeyAutoDisableMode: APIKeyAutoDisableMode
   apiKeyAutoDisableRules: [APIKeyAutoDisableRule!]
 }
 
 input ChannelPoliciesInput {
   stream: CapabilityPolicy
+  apiKeyAutoDisableMode: APIKeyAutoDisableMode
   apiKeyAutoDisableRules: [APIKeyAutoDisableRuleInput!]
 }
 
@@ -262,6 +297,7 @@ input ChannelSettingsInput {
   retryableErrorPatterns: [RetryableErrorPatternInput!]
   modelProtocols: [ModelProtocolInput!]
   providerQuota: ChannelProviderQuotaSettingsInput
+  quotaRoutingMode: ChannelQuotaRoutingMode
 }
 
 input ChannelRateLimitInput {
@@ -418,6 +454,24 @@ input BulkUpdateChannelOrderingInput {
 }
 
 type BulkUpdateChannelOrderingResult {
+  success: Boolean!
+  updated: Int!
+  channels: [Channel!]!
+}
+
+enum BulkAutoDisableAction {
+  write_rules
+  inherit
+  off
+}
+
+input BulkUpdateChannelAutoDisableInput {
+  channelIDs: [ID!]!
+  action: BulkAutoDisableAction!
+  rules: [APIKeyAutoDisableRuleInput!]
+}
+
+type BulkUpdateChannelAutoDisablePayload {
   success: Boolean!
   updated: Int!
   channels: [Channel!]!
@@ -888,6 +942,7 @@ type Mutation {
   bulkCreateChannels(input: BulkCreateChannelsInput!): [Channel!]!
   updateChannel(id: ID!, input: UpdateChannelInput!): Channel!
   saveChannelEndpoints(input: SaveChannelEndpointsInput!): Channel!
+  detectChannelEndpoints(input: DetectChannelEndpointsInput!): DetectChannelEndpointsPayload!
   updateChannelStatus(id: ID!, status: ChannelStatus!): Channel!
   deleteChannel(id: ID!): Boolean!
   bulkArchiveChannels(ids: [ID!]!): Boolean!
@@ -895,6 +950,9 @@ type Mutation {
   bulkEnableChannels(ids: [ID!]!): Boolean!
   bulkRecoverChannels(ids: [ID!]!): Boolean!
   bulkDeleteChannels(ids: [ID!]!): Boolean!
+  bulkAddChannelTags(ids: [ID!]!, tags: [String!]!): Boolean!
+  bulkRemoveChannelTags(ids: [ID!]!, tags: [String!]!): Boolean!
+  bulkManageChannelTags(ids: [ID!]!, addTags: [String!]!, removeTags: [String!]!): Boolean!
   testChannel(input: TestChannelInput!): TestChannelPayload!
   testChannelAPIKeys(channelID: ID!, modelID: String): TestChannelAPIKeysPayload!
   testChannelAPIKey(channelID: ID!, key: String!, modelID: String): TestAPIKeyResult!
@@ -902,6 +960,9 @@ type Mutation {
   bulkUpdateChannelOrdering(
     input: BulkUpdateChannelOrderingInput!
   ): BulkUpdateChannelOrderingResult!
+  bulkUpdateChannelAutoDisable(
+    input: BulkUpdateChannelAutoDisableInput!
+  ): BulkUpdateChannelAutoDisablePayload!
 
   # Channel API Key Management
   disableChannelAPIKey(channelID: ID!, key: String!): Boolean!
