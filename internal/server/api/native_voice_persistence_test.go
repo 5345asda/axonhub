@@ -35,7 +35,7 @@ func TestServeNativeVoiceHTTPPersistsFailedBusinessAttempt(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Provider-Request-ID", "business-failure")
+		w.Header().Set("X-Provider-Request-Id", "business-failure")
 		_, _ = w.Write([]byte(`{"base_resp":{"status_code":1004,"status_msg":"invalid voice"}}`))
 	}))
 	defer upstream.Close()
@@ -230,7 +230,7 @@ func TestServeNativeVoiceHTTPWritesBeforePersistingExecutions(t *testing.T) {
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Provider-Request-ID", "success")
+		w.Header().Set("X-Provider-Request-Id", "success")
 		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0},"data":{"audio":"00"}}`))
 	}))
 	defer upstream.Close()
