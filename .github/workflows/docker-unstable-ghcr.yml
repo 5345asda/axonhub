@@ -40,8 +40,11 @@ jobs:
       - name: Set immutable build version
         shell: bash
         run: |
-          printf 'unstable-%s\n' "${GITHUB_SHA:0:12}" > internal/build/VERSION
-          printf 'IMAGE_VERSION=unstable-%s\n' "${GITHUB_SHA:0:12}" >> "$GITHUB_ENV"
+          base_version="$(tr -d '\r\n' < internal/build/VERSION)"
+          base_version="${base_version%%+*}"
+          build_version="${base_version}+unstable.${GITHUB_SHA:0:12}"
+          printf '%s\n' "$build_version" > internal/build/VERSION
+          printf 'IMAGE_VERSION=%s\n' "$build_version" >> "$GITHUB_ENV"
 
       - name: Log in to GHCR
         uses: docker/login-action@v4
