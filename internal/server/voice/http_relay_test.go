@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/channel"
@@ -85,6 +86,112 @@ func TestNativeHTTPRelayStripsDownstreamCredentialsAndPreservesPayload(t *testin
 	require.Empty(t, w.Header().Get("Authorization"))
 	require.Empty(t, w.Header().Get("Set-Cookie"))
 	require.Equal(t, "*", w.Header().Get("Access-Control-Allow-Origin"))
+	require.Equal(t, body, gotBody)
+}
+
+func TestNativeHTTPRelayAppliesChannelBodyOverrides(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0}}`))
+	}))
+	defer server.Close()
+
+	target := nativeHTTPTestTarget(t, server.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)
+	target.Channel.Type = channel.TypeMinimax
+	target.Channel.Settings = &objects.ChannelSettings{
+		BodyOverrideOperations: []objects.OverrideOperation{
+			{
+				Op:    objects.OverrideOpSet,
+				Path:  "trace",
+				Value: `{{index .RequestHeader "x-trace-id"}}`,
+			},
+			{
+				Op:        objects.OverrideOpDelete,
+				Path:      "output_format",
+				Condition: `{{eq .Model "speech-2.8-hd"}}`,
+			},
+		},
+	}
+
+	inbound := httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd","text":"hello","voice_setting":{"voice_id":"female"},"output_format":"mp3"}`))
+	inbound.Header.Set("Content-Type", "application/json")
+	inbound.Header.Set("X-Trace-Id", "native-test")
+	w := httptest.NewRecorder()
+
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w, inbound, []NativeRelayTarget{target})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.False(t, gjson.GetBytes(gotBody, "output_format").Exists())
+	require.Equal(t, "speech-2.8-hd", gjson.GetBytes(gotBody, "model").String())
+	require.Equal(t, "hello", gjson.GetBytes(gotBody, "text").String())
+	require.Equal(t, "female", gjson.GetBytes(gotBody, "voice_setting.voice_id").String())
+	require.Equal(t, "native-test", gjson.GetBytes(gotBody, "trace").String())
+}
+
+func TestNativeHTTPRelayKeepsBodyOverridesIsolatedPerTarget(t *testing.T) {
+	var firstBody, secondBody []byte
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		firstBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"retry"}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		secondBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0}}`))
+	}))
+	defer second.Close()
+
+	firstTarget := nativeHTTPTestTarget(t, first.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)
+	firstTarget.Channel.Type = channel.TypeMinimax
+	firstTarget.Channel.Settings = &objects.ChannelSettings{BodyOverrideOperations: []objects.OverrideOperation{{
+		Op: objects.OverrideOpSet, Path: "candidate_marker", Value: "first",
+	}}}
+	secondTarget := nativeHTTPTestTarget(t, second.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)
+	secondTarget.Channel.Type = channel.TypeMinimax
+	secondTarget.Channel.ID = 2
+	secondTarget.Channel.Settings = &objects.ChannelSettings{BodyOverrideOperations: []objects.OverrideOperation{{
+		Op: objects.OverrideOpDelete, Path: "output_format",
+	}}}
+
+	w := httptest.NewRecorder()
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd","text":"hello","output_format":"mp3"}`)),
+		[]NativeRelayTarget{firstTarget, secondTarget})
+
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "first", gjson.GetBytes(firstBody, "candidate_marker").String())
+	require.Equal(t, "mp3", gjson.GetBytes(firstBody, "output_format").String())
+	require.False(t, gjson.GetBytes(secondBody, "candidate_marker").Exists())
+	require.False(t, gjson.GetBytes(secondBody, "output_format").Exists())
+}
+
+func TestNativeHTTPRelayPreservesNonMiniMaxNativeBodyOverrides(t *testing.T) {
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer server.Close()
+
+	target := nativeHTTPTestTarget(t, server.URL, objects.NativeVoiceAPIFormatDoubaoTTS)
+	target.Channel.Settings = &objects.ChannelSettings{BodyOverrideOperations: []objects.OverrideOperation{{
+		Op: objects.OverrideOpDelete, Path: "output_format",
+	}}}
+	body := []byte(`{"text":"hello","output_format":"mp3"}`)
+	inbound := httptest.NewRequest(http.MethodPost, "http://axonhub.test/api/v3/tts/unidirectional", bytes.NewReader(body))
+	inbound.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	err := NewNativeHTTPRelay(nil).Relay(context.Background(), w, inbound, []NativeRelayTarget{target})
+
+	require.NoError(t, err)
 	require.Equal(t, body, gotBody)
 }
 

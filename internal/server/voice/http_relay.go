@@ -12,8 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tidwall/gjson"
+
 	"github.com/looplj/axonhub/internal/objects"
 	"github.com/looplj/axonhub/internal/server/biz"
+	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/llm/httpclient"
 )
 
@@ -266,7 +269,34 @@ func (r *NativeHTTPRelay) buildNativeHTTPRelayRequest(
 		return nil, err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, inbound.Method, upstreamURL.String(), bytes.NewReader(body))
+	outboundBody := body
+	// Native relays normally preserve provider payloads byte-for-byte. MiniMax
+	// T2A is the explicit exception: its channel settings can remove or adapt
+	// request fields that the upstream rejects.
+	if target.Protocol.APIFormat == objects.NativeVoiceAPIFormatMiniMaxT2A &&
+		target.Channel != nil && len(target.Channel.GetBodyOverrideOperations()) > 0 {
+		model := gjson.GetBytes(body, target.Protocol.ModelPath).String()
+		overrideRequest := &httpclient.Request{
+			Headers:     inbound.Header,
+			ContentType: inbound.Header.Get("Content-Type"),
+			APIFormat:   target.Protocol.APIFormat,
+			Body:        bytes.Clone(body),
+		}
+		overrideRequest = orchestrator.ApplyChannelBodyOverrideOperations(
+			ctx,
+			target.Channel,
+			overrideRequest,
+			orchestrator.RenderContext{
+				RequestModel:  model,
+				Model:         model,
+				RequestHeader: orchestrator.BuildRequestHeaderMap(inbound.Header),
+			},
+			body,
+		)
+		outboundBody = overrideRequest.Body
+	}
+
+	req, err := http.NewRequestWithContext(ctx, inbound.Method, upstreamURL.String(), bytes.NewReader(outboundBody))
 	if err != nil {
 		return nil, err
 	}

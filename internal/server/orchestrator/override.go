@@ -15,6 +15,7 @@ import (
 
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/objects"
+	"github.com/looplj/axonhub/internal/server/biz"
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/pipeline"
@@ -52,7 +53,19 @@ func buildRequestHeaderMap(llmReq *llm.Request) map[string]string {
 		return requestHeaders
 	}
 
-	for key, values := range llmReq.RawRequest.Headers {
+	return BuildRequestHeaderMap(llmReq.RawRequest.Headers)
+}
+
+// BuildRequestHeaderMap returns the non-sensitive request headers available to
+// channel override templates. Both canonical and lowercase keys are exposed to
+// preserve existing template behavior.
+func BuildRequestHeaderMap(headers http.Header) map[string]string {
+	requestHeaders := make(map[string]string)
+	if headers == nil {
+		return requestHeaders
+	}
+
+	for key, values := range headers {
 		if len(values) == 0 {
 			continue
 		}
@@ -146,35 +159,76 @@ func evaluateCondition(ctx context.Context, condition string, renderCtx RenderCo
 	return strings.TrimSpace(rendered) == "true"
 }
 
+// ApplyChannelBodyOverrideOperations applies a channel's configured request
+// body operations to a JSON request. It is shared by transformed and native
+// HTTP relays so each channel observes the same body-operation semantics.
+func ApplyChannelBodyOverrideOperations(
+	ctx context.Context,
+	channel *biz.Channel,
+	request *httpclient.Request,
+	renderCtx RenderContext,
+	originalBody []byte,
+) *httpclient.Request {
+	if channel == nil || request == nil {
+		return request
+	}
+
+	ops := channel.GetBodyOverrideOperations()
+	if len(ops) == 0 {
+		return request
+	}
+
+	// Body override operations are implemented with sjson, which silently discards a
+	// non-JSON document and rebuilds it as a fresh JSON object. Applying them to a
+	// multipart body (image edit/variation, transcription, ...) would replace the whole
+	// payload with a tiny JSON object while the Content-Type still advertises the
+	// multipart boundary, so the upstream sees a truncated form.
+	if !bodyOverrideSupported(request) {
+		log.Warn(ctx, "skipping body override operations for non-JSON request body",
+			log.String("channel", channel.Name),
+			log.Int("channel_id", channel.ID),
+			log.String("content_type", requestContentType(request)),
+			log.String("api_format", request.APIFormat),
+		)
+		return request
+	}
+
+	body := request.Body
+	for _, op := range ops {
+		if strings.EqualFold(op.Path, "stream") {
+			log.Warn(ctx, "stream override parameter ignored",
+				log.String("channel", channel.Name),
+				log.Int("channel_id", channel.ID),
+			)
+			continue
+		}
+
+		var err error
+		body, err = applyBodyOperation(ctx, body, op, renderCtx, originalBody)
+		if err != nil {
+			log.Warn(ctx, "failed to apply override operation",
+				log.String("channel", channel.Name),
+				log.String("op", op.Op),
+				log.String("path", op.Path),
+				log.Cause(err),
+			)
+		}
+	}
+
+	request.Body = body
+	return request
+}
+
 // applyOverrideRequestBody creates a middleware that applies channel override operations.
 func applyOverrideRequestBody(outbound *PersistentOutboundTransformer) pipeline.Middleware {
 	return pipeline.OnRawRequest("override-request-body", func(ctx context.Context, request *httpclient.Request) (*httpclient.Request, error) {
 		channel := outbound.GetCurrentChannel()
-
-		ops := channel.GetBodyOverrideOperations()
-		if len(ops) == 0 {
-			return request, nil
-		}
-
-		// Body override operations are implemented with sjson, which silently discards a
-		// non-JSON document and rebuilds it as a fresh JSON object. Applying them to a
-		// multipart body (image edit/variation, transcription, ...) would replace the whole
-		// payload with a tiny JSON object while the Content-Type still advertises the
-		// multipart boundary, so the upstream sees a truncated form.
-		if !bodyOverrideSupported(request) {
-			log.Warn(ctx, "skipping body override operations for non-JSON request body",
-				log.String("channel", channel.Name),
-				log.Int("channel_id", channel.ID),
-				log.String("content_type", requestContentType(request)),
-				log.String("api_format", request.APIFormat),
-			)
-
+		if channel == nil || len(channel.GetBodyOverrideOperations()) == 0 {
 			return request, nil
 		}
 
 		llmReq := outbound.state.LlmRequest
 		renderCtx := buildRenderContext(llmReq, outbound.state.OriginalModel)
-		body := request.Body
 
 		// The outbound body is produced by format transformation, so a field the client
 		// sent may not survive it. set_if_absent also consults the original inbound body
@@ -184,40 +238,18 @@ func applyOverrideRequestBody(outbound *PersistentOutboundTransformer) pipeline.
 			originalBody = llmReq.RawRequest.Body
 		}
 
-		for _, op := range ops {
-			if strings.EqualFold(op.Path, "stream") {
-				log.Warn(ctx, "stream override parameter ignored",
-					log.String("channel", channel.Name),
-					log.Int("channel_id", channel.ID),
-				)
-
-				continue
-			}
-
-			var err error
-
-			body, err = applyBodyOperation(ctx, body, op, renderCtx, originalBody)
-			if err != nil {
-				log.Warn(ctx, "failed to apply override operation",
-					log.String("channel", channel.Name),
-					log.String("op", op.Op),
-					log.String("path", op.Path),
-					log.Cause(err),
-				)
-			}
-		}
+		oldBody := request.Body
+		request = ApplyChannelBodyOverrideOperations(ctx, channel, request, renderCtx, originalBody)
 
 		if log.DebugEnabled(ctx) {
 			log.Debug(ctx, "applied body override operations",
 				log.String("channel", channel.Name),
 				log.Int("channel_id", channel.ID),
-				log.Any("operations", ops),
-				log.String("old_body", string(request.Body)),
-				log.String("new_body", string(body)),
+				log.Any("operations", channel.GetBodyOverrideOperations()),
+				log.String("old_body", string(oldBody)),
+				log.String("new_body", string(request.Body)),
 			)
 		}
-
-		request.Body = body
 
 		return request, nil
 	})
