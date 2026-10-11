@@ -63,6 +63,18 @@ server:
 - 浏览器客户端如需读取这些头，还应将相应名称加入 `server.cors.exposed_headers`。
 - 未配置 `thread_header` 或 `trace_header` 时，将采用上面的默认头名。
 
+### 按 API Key 和模型固定追踪
+将 `api_key_model_sticky` 设为 `true`，即可根据已认证的 API Key 和请求中的模型名派生稳定的追踪 ID：
+
+```yaml
+server:
+  trace:
+    api_key_model_sticky: true
+    api_key_model_sticky_secret: "replace-with-a-long-random-secret"
+```
+
+派生值使用 HMAC，原始 API Key 和模型名不会写入追踪 ID。启用后，派生值优先于客户端提供的追踪请求头。所有 AxonHub 实例必须使用相同的服务端密钥；更换密钥会开始一组新的粘性追踪。没有已认证 API Key 或模型名的请求会继续使用原有追踪解析顺序。要让该追踪标识实际影响渠道选择，系统、模型或 API Key Profile 的 `traceStickyMode` 需保持为 `prefer_previous_channel`（系统默认值）。也可以通过 `AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY` 和 `AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY_SECRET` 环境变量配置。
+
 ### 在 OpenAI 兼容客户端中使用追踪
 ```bash
 curl https://your-axonhub-instance/v1/chat/completions \

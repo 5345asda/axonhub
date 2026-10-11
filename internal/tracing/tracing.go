@@ -38,6 +38,15 @@ type Config struct {
 	// Default to nil.
 	ExtraTraceBodyFields []string `conf:"extra_trace_body_fields" yaml:"extra_trace_body_fields" json:"extra_trace_body_fields"`
 
+	// APIKeyModelSticky derives a stable trace ID from the authenticated API key
+	// and request model before evaluating client-provided trace identifiers.
+	// Default to false.
+	APIKeyModelSticky bool `conf:"api_key_model_sticky" yaml:"api_key_model_sticky" json:"api_key_model_sticky"`
+
+	// APIKeyModelStickySecret is the server-only HMAC secret used by
+	// APIKeyModelSticky. It is omitted from JSON config previews.
+	APIKeyModelStickySecret string `conf:"api_key_model_sticky_secret" yaml:"api_key_model_sticky_secret" json:"-"`
+
 	// ClaudeCodeTraceEnabled enables extracting trace IDs from Claude Code request metadata.
 	// Default to true.
 	ClaudeCodeTraceEnabled bool `conf:"claude_code_trace_enabled" yaml:"claude_code_trace_enabled" json:"claude_code_trace_enabled"`

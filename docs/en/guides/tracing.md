@@ -63,6 +63,18 @@ server:
 - Browser clients must also include these names in `server.cors.exposed_headers` to read them.
 - Leave `thread_header` or `trace_header` empty to use the default header names above.
 
+### Stable Traces by API Key and Model
+Set `api_key_model_sticky` to derive a stable trace ID from the authenticated API key and the request model:
+
+```yaml
+server:
+  trace:
+    api_key_model_sticky: true
+    api_key_model_sticky_secret: "replace-with-a-long-random-secret"
+```
+
+The derived ID is an HMAC digest, so the raw API key and model are not stored in the trace ID. When enabled, this derived ID takes precedence over client-provided trace headers. The server secret must be identical across all AxonHub instances; changing it starts a new set of sticky traces. Requests without an authenticated API key or model continue through the normal trace extraction order. To make this trace identity affect channel selection, keep the system, model, or API-key-profile `traceStickyMode` set to `prefer_previous_channel` (the system default). The same settings are available through `AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY` and `AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY_SECRET`.
+
 ### Using Tracing with OpenAI-Compatible Clients
 ```bash
 curl https://your-axonhub-instance/v1/chat/completions \

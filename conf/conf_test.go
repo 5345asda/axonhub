@@ -124,6 +124,24 @@ func TestTraceExtractionDefaultsToEnabled(t *testing.T) {
 	}
 }
 
+func TestAPIKeyModelStickyConfigFromEnvironment(t *testing.T) {
+	t.Setenv("AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY", "true")
+	t.Setenv("AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY_SECRET", "test-sticky-secret")
+
+	configFile := writeTestConfig(t, "")
+	cfg, _, err := loadConfig(configFile)
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+
+	if !cfg.APIServer.Trace.APIKeyModelSticky {
+		t.Fatal("API key and model sticky tracing should be enabled")
+	}
+	if cfg.APIServer.Trace.APIKeyModelStickySecret != "test-sticky-secret" {
+		t.Fatalf("sticky secret = %q, want configured value", cfg.APIServer.Trace.APIKeyModelStickySecret)
+	}
+}
+
 func writeTestConfig(t *testing.T, contents string) string {
 	t.Helper()
 

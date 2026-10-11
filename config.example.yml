@@ -23,6 +23,8 @@ server:
     extra_trace_headers: [] # Extra trace headers (env: AXONHUB_SERVER_TRACE_EXTRA_TRACE_HEADERS)
     response_trace_headers: [] # Response headers for the resolved trace ID (env: AXONHUB_SERVER_TRACE_RESPONSE_TRACE_HEADERS)
     extra_trace_body_fields: [] # Extra trace body fields (env: AXONHUB_SERVER_TRACE_EXTRA_TRACE_BODY_FIELDS)
+    api_key_model_sticky: false # Derive a stable trace ID from API key and model (env: AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY)
+    api_key_model_sticky_secret: "" # HMAC secret; use the same random value on every app instance (env: AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY_SECRET)
     claude_code_trace_enabled: true # Enable extracting trace IDs from Claude Code request metadata (env: AXONHUB_SERVER_TRACE_CLAUDE_CODE_TRACE_ENABLED)
     codex_trace_enabled: true # Enable extracting trace IDs from Codex Session_id header (env: AXONHUB_SERVER_TRACE_CODEX_TRACE_ENABLED)
     opencode_trace_enabled: true # Enable extracting trace IDs from OpenCode session headers (env: AXONHUB_SERVER_TRACE_OPENCODE_TRACE_ENABLED)

@@ -74,11 +74,24 @@ func tryGetTraceIDFromBody(c *gin.Context, config tracing.Config) (string, error
 	return "", nil
 }
 
-// WithTrace is a middleware that extracts the X-Trace-ID header and
-// gets or creates the corresponding trace entity in the database.
+// WithTrace resolves a trace ID and gets or creates the corresponding trace
+// entity in the database.
 func WithTrace(config tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		traceID := getTraceIDFromHeader(c, config)
+		traceID := ""
+		if config.APIKeyModelSticky {
+			var err error
+
+			traceID, err = tryGetTraceIDFromAPIKeyAndModel(c, config.APIKeyModelStickySecret)
+			if err != nil {
+				AbortWithError(c, http.StatusInternalServerError, err)
+				return
+			}
+		}
+
+		if traceID == "" {
+			traceID = getTraceIDFromHeader(c, config)
+		}
 		if traceID == "" && config.OpenCodeTraceEnabled {
 			traceID = tryExtractTraceIDFromOpenCodeRequest(c)
 		}
