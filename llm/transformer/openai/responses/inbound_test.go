@@ -524,6 +524,34 @@ func TestInboundTransformer_TransformRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "request keeps additional_tools input item as a raw fragment",
+			httpReq: &httpclient.Request{
+				Body: []byte(`{
+					"model": "gpt-4o",
+					"input": [
+						{"type": "additional_tools", "tools": [{"type": "function", "name": "shell"}]},
+						{"type": "message", "role": "user", "content": "Hello"}
+					]
+				}`),
+			},
+			expectError: false,
+			validate: func(t *testing.T, result *llm.Request) {
+				require.Len(t, result.Messages, 1)
+				require.Equal(t, "user", result.Messages[0].Role)
+				// The item has no counterpart in the unified request, so it is kept
+				// verbatim here and replayed only when the upstream speaks the
+				// private Codex protocol.
+				require.NotNil(t, result.ProviderExtensions)
+				require.NotNil(t, result.ProviderExtensions.OpenAIResponses)
+
+				fragments := result.ProviderExtensions.OpenAIResponses.Request.RawInputItems
+				require.Len(t, fragments, 1)
+				require.Equal(t, "additional_tools", fragments[0].Type)
+				require.Equal(t, 0, fragments[0].OriginalIndex)
+				require.Contains(t, string(fragments[0].Raw), `"shell"`)
+			},
+		},
+		{
 			name: "request with previous_response_id",
 			httpReq: &httpclient.Request{
 				Body: []byte(`{
@@ -1787,6 +1815,121 @@ func TestConvertInputToMessages_DoesNotGroupToolCallsAcrossBoundaries(t *testing
 		})
 		require.Equal(t, "call_a", messages[0].ToolCalls[0].ID)
 		require.Equal(t, "call_b", messages[2].ToolCalls[0].ID)
+	})
+}
+
+// A Responses client may place a message item between a tool call and its output.
+// Chat-compatible upstreams reject the resulting assistant(tool_calls) -> message ->
+// tool sequence with "tool_calls must be followed by tool messages", so the output
+// has to sit next to the assistant message that requested it.
+func TestConvertInputToMessages_KeepsToolOutputAdjacentAcrossAnInterveningMessage(t *testing.T) {
+	roles := func(messages []llm.Message) []string {
+		out := make([]string, 0, len(messages))
+		for _, msg := range messages {
+			out = append(out, msg.Role)
+		}
+		return out
+	}
+
+	t.Run("system message between call and output", func(t *testing.T) {
+		input := &Input{Items: []Item{
+			{Type: "function_call", CallID: "call_a", Name: "run_command", Arguments: `{"cmd":"ls"}`},
+			{Role: "system", Content: &Input{Text: lo.ToPtr("Approved command prefix saved")}},
+			{Type: "function_call_output", CallID: "call_a", Output: &Input{Text: lo.ToPtr("first result")}},
+		}}
+
+		messages, err := convertInputToMessages(input)
+		require.NoError(t, err)
+		require.Equal(t, []string{"assistant", "tool", "system"}, roles(messages))
+		require.Equal(t, "call_a", messages[0].ToolCalls[0].ID)
+		require.Equal(t, "call_a", lo.FromPtr(messages[1].ToolCallID))
+		require.Equal(t, "first result", lo.FromPtr(messages[1].Content.Content))
+		require.Equal(t, "Approved command prefix saved", lo.FromPtr(messages[2].Content.Content))
+	})
+
+	t.Run("user message between call and output", func(t *testing.T) {
+		input := &Input{Items: []Item{
+			{Type: "function_call", CallID: "call_a", Name: "first_tool", Arguments: `{}`},
+			{Role: "user", Content: &Input{Text: lo.ToPtr("New turn.")}},
+			{Type: "function_call_output", CallID: "call_a", Output: &Input{Text: lo.ToPtr("first result")}},
+		}}
+
+		messages, err := convertInputToMessages(input)
+		require.NoError(t, err)
+		require.Equal(t, []string{"assistant", "tool", "user"}, roles(messages))
+		require.Equal(t, "call_a", lo.FromPtr(messages[1].ToolCallID))
+		require.Equal(t, "New turn.", lo.FromPtr(messages[2].Content.Content))
+	})
+
+	t.Run("custom tool call output", func(t *testing.T) {
+		input := &Input{Items: []Item{
+			{Type: "custom_tool_call", CallID: "call_custom", Name: "custom_tool", Input: lo.ToPtr("freeform")},
+			{Role: "user", Content: &Input{Text: lo.ToPtr("Interjected.")}},
+			{Type: "custom_tool_call_output", CallID: "call_custom", Output: &Input{Text: lo.ToPtr("custom result")}},
+		}}
+
+		messages, err := convertInputToMessages(input)
+		require.NoError(t, err)
+		require.Equal(t, []string{"assistant", "tool", "user"}, roles(messages))
+		require.Equal(t, "call_custom", lo.FromPtr(messages[1].ToolCallID))
+		require.Equal(t, "custom result", lo.FromPtr(messages[1].Content.Content))
+	})
+
+	t.Run("reasoning merged call keeps its output adjacent", func(t *testing.T) {
+		input := &Input{Items: []Item{
+			{
+				ID:      "reasoning_1",
+				Type:    "reasoning",
+				Summary: []ReasoningSummary{{Text: "thinking"}},
+			},
+			{Type: "function_call", CallID: "call_a", Name: "first_tool", Arguments: `{}`},
+			{Role: "system", Content: &Input{Text: lo.ToPtr("Note.")}},
+			{Type: "function_call_output", CallID: "call_a", Output: &Input{Text: lo.ToPtr("first result")}},
+		}}
+
+		messages, err := convertInputToMessages(input)
+		require.NoError(t, err)
+		require.Equal(t, []string{"assistant", "tool", "system"}, roles(messages))
+		require.Len(t, messages[0].ToolCalls, 1)
+		require.Equal(t, "call_a", messages[0].ToolCalls[0].ID)
+		require.Equal(t, "call_a", lo.FromPtr(messages[1].ToolCallID))
+	})
+
+	t.Run("grouped calls collect their outputs in item order", func(t *testing.T) {
+		input := &Input{Items: []Item{
+			{Type: "function_call", CallID: "call_a", Name: "first_tool", Arguments: `{}`},
+			{Type: "function_call", CallID: "call_b", Name: "second_tool", Arguments: `{}`},
+			{Role: "user", Content: &Input{Text: lo.ToPtr("Interjected.")}},
+			{Type: "function_call_output", CallID: "call_b", Output: &Input{Text: lo.ToPtr("second result")}},
+			{Type: "function_call_output", CallID: "call_a", Output: &Input{Text: lo.ToPtr("first result")}},
+			{Role: "user", Content: &Input{Text: lo.ToPtr("Continue.")}},
+		}}
+
+		messages, err := convertInputToMessages(input)
+		require.NoError(t, err)
+		require.Equal(t, []string{"assistant", "tool", "tool", "user", "user"}, roles(messages))
+		require.Len(t, messages[0].ToolCalls, 2)
+		require.Equal(t, "call_b", lo.FromPtr(messages[1].ToolCallID))
+		require.Equal(t, "second result", lo.FromPtr(messages[1].Content.Content))
+		require.Equal(t, "call_a", lo.FromPtr(messages[2].ToolCallID))
+		require.Equal(t, "Interjected.", lo.FromPtr(messages[3].Content.Content))
+		require.Equal(t, "Continue.", lo.FromPtr(messages[4].Content.Content))
+	})
+
+	t.Run("an output belonging to a later call is not hoisted", func(t *testing.T) {
+		input := &Input{Items: []Item{
+			{Type: "function_call", CallID: "call_a", Name: "first_tool", Arguments: `{}`},
+			{Role: "user", Content: &Input{Text: lo.ToPtr("Interjected.")}},
+			{Type: "function_call", CallID: "call_b", Name: "second_tool", Arguments: `{}`},
+			{Type: "function_call_output", CallID: "call_b", Output: &Input{Text: lo.ToPtr("second result")}},
+		}}
+
+		messages, err := convertInputToMessages(input)
+		require.NoError(t, err)
+		require.Equal(t, []string{"assistant", "user", "assistant", "tool"}, roles(messages))
+		require.Equal(t, "call_a", messages[0].ToolCalls[0].ID)
+		require.Equal(t, "call_b", messages[2].ToolCalls[0].ID)
+		require.Equal(t, "call_b", lo.FromPtr(messages[3].ToolCallID))
 	})
 }
 

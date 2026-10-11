@@ -34,15 +34,16 @@ func attachOpenAIResponsesRequestExtensions(chatReq *llm.Request, req *Request, 
 		reasoningContext = req.Reasoning.Context
 	}
 	requestExt := &llm.OpenAIResponsesRequestExtensions{
-		ReasoningContext: reasoningContext,
-		RawFields:        selectRawRequestFields(raw.Fields, rawCreateRequestFields),
-		RawTools:         buildRawOnlyToolFragments(req.Tools, raw.Tools),
-		ToolSignatures:   buildRepresentedToolSignatures(req.Tools),
-		RawToolChoice:    rawUnsupportedToolChoice(req.ToolChoice, raw.ToolChoice),
-		RawInputItems:    buildRawOnlyInputFragments(req.Input, raw.InputItems),
+		ReasoningContext:        reasoningContext,
+		RawFields:               selectRawRequestFields(raw.Fields, rawCreateRequestFields),
+		RawTools:                buildRawOnlyToolFragments(req.Tools, raw.Tools),
+		ToolSignatures:          buildRepresentedToolSignatures(req.Tools),
+		RawToolChoice:           rawUnsupportedToolChoice(req.ToolChoice, raw.ToolChoice),
+		RawInputItems:           buildRawOnlyInputFragments(req.Input, raw.InputItems),
+		OmittedInputItemIndices: buildOmittedInputItemIndices(req.Input),
 	}
 
-	if requestExt.ReasoningContext == "" && len(requestExt.RawFields) == 0 && len(requestExt.RawTools) == 0 && len(requestExt.RawToolChoice) == 0 && len(requestExt.RawInputItems) == 0 {
+	if requestExt.ReasoningContext == "" && len(requestExt.RawFields) == 0 && len(requestExt.RawTools) == 0 && len(requestExt.RawToolChoice) == 0 && len(requestExt.RawInputItems) == 0 && len(requestExt.OmittedInputItemIndices) == 0 {
 		return
 	}
 
@@ -265,6 +266,24 @@ func buildRawOnlyInputFragments(input Input, rawItems []json.RawMessage) []llm.O
 	return fragments
 }
 
+func buildOmittedInputItemIndices(input Input) []int {
+	if len(input.Items) == 0 {
+		return nil
+	}
+
+	omitted := make([]int, 0)
+	for i, item := range input.Items {
+		if item.Type == "reasoning" && item.EncryptedContent == nil {
+			omitted = append(omitted, i)
+		}
+	}
+
+	return omitted
+}
+
+// isStructurallyRepresentedInputItem reports whether an input item type is
+// rebuilt from the unified request. Types that are not rebuilt are replayed
+// verbatim from the raw body; see buildRawOnlyInputFragments.
 func isStructurallyRepresentedInputItem(itemType string) bool {
 	switch itemType {
 	case "", "message", "input_text", "input_image", "function_call", "function_call_output",
@@ -284,6 +303,8 @@ func openAIResponsesRequestExtensions(llmReq *llm.Request) *llm.OpenAIResponsesR
 	return requestExt
 }
 
+// marshalRequestPayload marshals the unified request and replays the raw fields,
+// tools and input items the caller sent so they survive the round trip.
 func marshalRequestPayload(payload Request, llmReq *llm.Request) ([]byte, error) {
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -343,7 +364,7 @@ func marshalCompactRequestPayload(payload CompactAPIRequest, llmReq *llm.Request
 	}
 
 	requestExt := openAIResponsesRequestExtensions(llmReq)
-	if requestExt == nil || len(requestExt.RawFields) == 0 {
+	if requestExt == nil {
 		return body, nil
 	}
 
@@ -352,14 +373,26 @@ func marshalCompactRequestPayload(payload CompactAPIRequest, llmReq *llm.Request
 		return nil, err
 	}
 	mergeRawRequestFields(obj, requestExt)
+	if input, ok := mergeRawOnlyInputItems(obj["input"], requestExt); ok {
+		inputRaw, err := json.Marshal(input)
+		if err != nil {
+			return nil, err
+		}
+		obj["input"] = inputRaw
+	}
 
 	return json.Marshal(obj)
 }
 
+// mergeRawOnlyInputItems rebuilds the outgoing `input` array from the merged
+// request: items rebuilt from messages and raw items that had no representation
+// are interleaved back into the positions they were sent in.
 func mergeRawOnlyInputItems(structuredRaw json.RawMessage, requestExt *llm.OpenAIResponsesRequestExtensions) ([]json.RawMessage, bool) {
-	if requestExt == nil || len(requestExt.RawInputItems) == 0 {
+	if requestExt == nil || (len(requestExt.RawInputItems) == 0 && len(requestExt.OmittedInputItemIndices) == 0) {
 		return nil, false
 	}
+
+	fragments := requestExt.RawInputItems
 
 	var structuredItems []json.RawMessage
 	if len(structuredRaw) > 0 {
@@ -368,24 +401,44 @@ func mergeRawOnlyInputItems(structuredRaw json.RawMessage, requestExt *llm.OpenA
 		}
 	}
 
-	total := len(structuredItems) + len(requestExt.RawInputItems)
-	items := make([]json.RawMessage, 0, total)
+	maxOriginalIndex := len(structuredItems) + len(fragments) + len(requestExt.OmittedInputItemIndices) - 1
+	for _, fragment := range fragments {
+		if fragment.OriginalIndex > maxOriginalIndex {
+			maxOriginalIndex = fragment.OriginalIndex
+		}
+	}
+	for _, index := range requestExt.OmittedInputItemIndices {
+		if index < 0 {
+			return nil, false
+		}
+		if index > maxOriginalIndex {
+			maxOriginalIndex = index
+		}
+	}
+	items := make([]json.RawMessage, 0, len(structuredItems)+len(fragments))
 	structuredIndex := 0
-	rawByIndex := make(map[int]json.RawMessage, len(requestExt.RawInputItems))
-	for _, fragment := range requestExt.RawInputItems {
+	rawByIndex := make(map[int]json.RawMessage, len(fragments))
+	omittedByIndex := make(map[int]struct{}, len(requestExt.OmittedInputItemIndices))
+	for _, fragment := range fragments {
 		if len(fragment.Raw) == 0 || fragment.OriginalIndex < 0 {
 			return nil, false
 		}
 		rawByIndex[fragment.OriginalIndex] = cloneRaw(fragment.Raw)
 	}
+	for _, index := range requestExt.OmittedInputItemIndices {
+		omittedByIndex[index] = struct{}{}
+	}
 
-	for i := 0; i < total; i++ {
+	for i := 0; i <= maxOriginalIndex; i++ {
+		if _, omitted := omittedByIndex[i]; omitted {
+			continue
+		}
 		if raw, ok := rawByIndex[i]; ok {
 			items = append(items, raw)
 			continue
 		}
 		if structuredIndex >= len(structuredItems) {
-			return nil, false
+			continue
 		}
 		items = append(items, cloneRaw(structuredItems[structuredIndex]))
 		structuredIndex++

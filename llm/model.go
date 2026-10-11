@@ -272,6 +272,9 @@ type Request struct {
 	// AlphaSearch is the raw Codex/CPA /v1/alpha/search request payload.
 	AlphaSearch *AlphaSearchRequest `json:"alpha_search_request,omitempty"`
 
+	// Decisions is the raw OpenAI /v1/decisions request payload.
+	Decisions *DecisionsRequest `json:"decisions_request,omitempty"`
+
 	// RawRequest is the raw request from the client.
 	RawRequest *httpclient.Request `json:"raw_request,omitempty"`
 
@@ -669,6 +672,13 @@ type ResponseFormat struct {
 //   - Video: VideoResponse for video generation responses
 //   - Compact: CompactResponse for compact responses
 //   - Completion: CompletionResponse for legacy completion responses
+type StreamCompletionEvidence string
+
+const (
+	StreamCompletionEvidenceNone          StreamCompletionEvidence = ""
+	StreamCompletionEvidenceOpenAIChatEOF StreamCompletionEvidence = "openai_chat_clean_eof"
+)
+
 type Response struct {
 	ID string `json:"id"`
 
@@ -750,6 +760,9 @@ type Response struct {
 	// AlphaSearch is the raw Codex/CPA /v1/alpha/search response payload.
 	AlphaSearch *AlphaSearchResponse `json:"alpha_search_response,omitempty"`
 
+	// Decisions is the raw OpenAI /v1/decisions response payload.
+	Decisions *DecisionsResponse `json:"decisions_response,omitempty"`
+
 	// RequestType is the outbound request type from the llm service.
 	// e.g. the request from the chat/completions endpoint is in the chat type.
 	// if it is embedding request, it will be embedding.
@@ -762,7 +775,8 @@ type Response struct {
 
 	// TransformerMetadata stores metadata from transformers that process the response.
 	// This field is ignored when serializing to JSON and is only used internally by transformers.
-	TransformerMetadata map[string]any `json:"transformer_metadata,omitempty"`
+	TransformerMetadata      map[string]any           `json:"transformer_metadata,omitempty"`
+	StreamCompletionEvidence StreamCompletionEvidence `json:"-"`
 }
 
 // Choice represents a choice in the response.

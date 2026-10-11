@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Switch } from '@/components/ui/switch';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { TooltipProvider } from '@/components/ui/tooltip';
@@ -106,12 +107,13 @@ export default function Playground() {
   const { modelSource, selectedChannel, model } = selection;
   const setModel = (nextModel: string) => setSelectionState((current) => ({ ...current, model: nextModel }));
   const [temperature, setTemperature] = useState(0.6);
+  const [sendTemperature, setSendTemperature] = useState(true);
   const [maxTokens, setMaxTokens] = useState(4096);
   const [systemPrompt, setSystemPrompt] = useState(t('playground.settings.defaultSystemPrompt'));
 
   // useRef hooks for direct access to current values
   const modelRef = useRef(model);
-  const temperatureRef = useRef(temperature);
+  const temperatureRef = useRef<number | undefined>(temperature);
   const maxTokensRef = useRef(maxTokens);
   const systemPromptRef = useRef(systemPrompt);
   const selectedChannelRef = useRef(selectedChannel);
@@ -123,8 +125,8 @@ export default function Playground() {
   }, [model]);
 
   useEffect(() => {
-    temperatureRef.current = temperature;
-  }, [temperature]);
+    temperatureRef.current = sendTemperature ? temperature : undefined;
+  }, [temperature, sendTemperature]);
 
   useEffect(() => {
     maxTokensRef.current = maxTokens;
@@ -180,7 +182,7 @@ export default function Playground() {
       body: () => {
         return {
           model: modelRef.current,
-          temperature: temperatureRef.current,
+          ...(temperatureRef.current !== undefined ? { temperature: temperatureRef.current } : {}),
           max_tokens: maxTokensRef.current,
           system: systemPromptRef.current,
         };
@@ -308,11 +310,11 @@ export default function Playground() {
     }
   }, [messages, regenerate, setMessages]);
 
-  // 渠道选项列表
+  // 渠道选项列表（仅展示启用中的渠道，已关闭的渠道不可用）
   const channelOptions = useMemo(() => {
     if (!channelsData?.edges) return [];
     return channelsData.edges
-      .filter((edge) => edge.node.allModelEntries.length > 0)
+      .filter((edge) => edge.node.status === 'enabled' && edge.node.allModelEntries.length > 0)
       .map((edge) => ({
         value: edge.node.id,
         label: edge.node.name,
@@ -359,12 +361,12 @@ export default function Playground() {
     }
   }, [model, modelSource, selectedChannel, selectedProjectId, selection.projectId, selection.ready]);
 
-  // 根据选中渠道过滤出模型列表
+  // 根据选中渠道过滤出模型列表（渠道已关闭时不展示其模型）
   const modelOptions = useMemo(() => {
     if (isModelGatewaySource) return modelPageModelOptions;
     if (!channelsData?.edges || !selectedChannel) return [];
     const channelEdge = channelsData.edges.find((edge) => edge.node.id === selectedChannel);
-    if (!channelEdge) return [];
+    if (!channelEdge || channelEdge.node.status !== 'enabled') return [];
     return channelEdge.node.allModelEntries.map((entry) => ({
       value: entry.requestModel,
       label: entry.requestModel,
@@ -376,7 +378,7 @@ export default function Playground() {
   // 处理渠道选择，自动选第一个模型
   const handleChannelChange = useCallback(
     (channelId: string) => {
-      const channelEdge = channelsData?.edges?.find((edge) => edge.node.id === channelId);
+      const channelEdge = channelsData?.edges?.find((edge) => edge.node.id === channelId && edge.node.status === 'enabled');
       const firstModel = channelEdge?.node.allModelEntries[0]?.requestModel ?? '';
       setSelectionState((current) => ({ ...current, selectedChannel: channelId, model: firstModel }));
     },
@@ -398,7 +400,7 @@ export default function Playground() {
         }));
         return;
       }
-      const channelEdge = channelsData?.edges?.find((edge) => edge.node.id === selectedChannel);
+      const channelEdge = channelsData?.edges?.find((edge) => edge.node.id === selectedChannel && edge.node.status === 'enabled');
       setSelectionState((current) => ({
         ...current,
         modelSource: nextSource,
@@ -490,9 +492,16 @@ export default function Playground() {
               </div>
 
               <div className='space-y-3'>
-                <Label htmlFor='temperature' className='text-xs font-semibold'>
-                  {t('playground.settings.temperature')}: {temperature}
-                </Label>
+                <div className='flex items-center justify-between gap-2'>
+                  <Label htmlFor='temperature' className='text-xs font-semibold'>
+                    {t('playground.settings.temperature')}: {temperature}
+                  </Label>
+                  <Switch
+                    aria-label={t('playground.settings.sendTemperature')}
+                    checked={sendTemperature}
+                    onCheckedChange={setSendTemperature}
+                  />
+                </div>
                 <div className='px-1'>
                   <Input
                     id='temperature'
@@ -501,6 +510,7 @@ export default function Playground() {
                     max='2'
                     step='0.1'
                     value={temperature}
+                    disabled={!sendTemperature}
                     onChange={(e) => setTemperature(parseFloat(e.target.value))}
                     className='bg-muted h-2 w-full cursor-pointer appearance-none rounded-lg'
                   />
@@ -510,6 +520,7 @@ export default function Playground() {
                     <span>2</span>
                   </div>
                 </div>
+                {!sendTemperature && <p className='text-muted-foreground text-xs'>{t('playground.settings.temperatureOmitted')}</p>}
               </div>
 
               <div className='space-y-3'>
