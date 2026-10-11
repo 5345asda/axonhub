@@ -33,7 +33,7 @@ func tryGetTraceIDFromAPIKeyAndModel(c *gin.Context, secret string) (string, err
 	// model, but keeping the early return here avoids touching untrusted input.
 	model, err := requestModel(c)
 	if err != nil {
-		return "", fmt.Errorf("%w: %v", errAPIKeyModelStickyRequestBody, err)
+		return "", fmt.Errorf("%w: %w", errAPIKeyModelStickyRequestBody, err)
 	}
 
 	return tracing.APIKeyModelTraceID(c.Request.Context(), model, secret)

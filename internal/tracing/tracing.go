@@ -19,8 +19,8 @@ import (
 const (
 	// APIKeyModelTracePrefix identifies trace IDs derived from an API key and model.
 	APIKeyModelTracePrefix = "akm-v1-"
-	apiKeyModelTraceDomain = "axonhub:api-key-model-sticky:v1"
-	apiKeyModelNoAuthValue = "AXONHUB_API_KEY_NO_AUTH"
+	apiKeyModelTraceDomain = "axonhub:api-key-model-sticky:v1" //nolint:gosec // protocol domain separator, not a credential
+	apiKeyModelNoAuthValue = "AXONHUB_API_KEY_NO_AUTH"         //nolint:gosec // no-auth sentinel, not a credential
 )
 
 type Config struct {
