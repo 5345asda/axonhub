@@ -2,7 +2,7 @@
 
 ### Added
 
-- Added an optional HMAC-derived API-key-plus-model trace identity for sticky channel routing.
+- Added an optional HMAC-derived API-key-plus-model trace identity for sticky channel routing, including Responses WebSocket `response.create` frames.
 - Added per-channel API key rules with status/keyword matching, configurable error thresholds, temporary auto-recovery, and permanent disable/delete actions.
 - NeuralWatt channels now show the elapsed monthly energy window marker on the kWh bar and an estimated period quota, matching the other windowed providers.
 

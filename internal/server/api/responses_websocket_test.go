@@ -18,6 +18,7 @@ import (
 	"github.com/tidwall/gjson"
 
 	"github.com/looplj/axonhub/internal/server/orchestrator"
+	"github.com/looplj/axonhub/internal/tracing"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer/shared"
@@ -612,6 +613,40 @@ func TestResponsesWebSocketRequiresUpgrade(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), "websocket upgrade required")
 }
 
+func TestResponsesWebSocketTraceBinderSurvivesPerEventTimeoutContext(t *testing.T) {
+	const traceID = "akm-v1-frame-trace"
+	process := func(ctx context.Context, _ *httpclient.Request) (orchestrator.ChatCompletionResult, error) {
+		gotTraceID, ok := tracing.GetTraceID(ctx)
+		if !ok || gotTraceID != traceID {
+			return orchestrator.ChatCompletionResult{}, fmt.Errorf("trace context was not retained: %q", gotTraceID)
+		}
+		gotSessionID, ok := shared.GetSessionID(ctx)
+		if !ok || gotSessionID != traceID {
+			return orchestrator.ChatCompletionResult{}, fmt.Errorf("session context was not retained: %q", gotSessionID)
+		}
+
+		return orchestrator.ChatCompletionResult{
+			ChatCompletionStream: streams.SliceStream([]*httpclient.StreamEvent{{
+				Type: "response.completed",
+				Data: []byte(`{"type":"response.completed","response":{"id":"resp_trace","status":"completed"}}`),
+			}}),
+		}, nil
+	}
+	binder := func(ctx context.Context, _ *httpclient.Request) (context.Context, error) {
+		ctx = tracing.WithTraceID(ctx, traceID)
+		return shared.WithSessionID(ctx, traceID), nil
+	}
+
+	server := newResponsesWebSocketTestServerWithTraceBinder(t, process, nil, binder, time.Second)
+	conn := dialResponsesWebSocket(t, server.URL, nil)
+	defer conn.Close()
+
+	require.NoError(t, conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"response.create","model":"gpt-test","input":"hello"}`)))
+	_, event, err := conn.ReadMessage()
+	require.NoError(t, err)
+	require.Equal(t, "response.completed", gjson.GetBytes(event, "type").String())
+}
+
 func newResponsesWebSocketTestServer(
 	t *testing.T,
 	process responsesWebSocketProcessFunc,
@@ -628,6 +663,31 @@ func newResponsesWebSocketTestServer(
 	router := gin.New()
 	router.GET("/v1/responses", func(c *gin.Context) {
 		serveResponsesWebSocket(c, timeout, process, transformError)
+	})
+
+	server := httptest.NewServer(router)
+	t.Cleanup(server.Close)
+
+	return server
+}
+
+func newResponsesWebSocketTestServerWithTraceBinder(
+	t *testing.T,
+	process responsesWebSocketProcessFunc,
+	transformError responsesWebSocketErrorFunc,
+	traceBinder responsesWebSocketTraceBinder,
+	requestTimeout ...time.Duration,
+) *httptest.Server {
+	t.Helper()
+
+	timeout := time.Duration(0)
+	if len(requestTimeout) > 0 {
+		timeout = requestTimeout[0]
+	}
+
+	router := gin.New()
+	router.GET("/v1/responses", func(c *gin.Context) {
+		serveResponsesWebSocket(c, timeout, process, transformError, traceBinder)
 	})
 
 	server := httptest.NewServer(router)

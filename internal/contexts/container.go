@@ -2,6 +2,7 @@ package contexts
 
 import (
 	"context"
+	"slices"
 	"sync"
 
 	"github.com/looplj/axonhub/internal/ent"
@@ -45,4 +46,28 @@ func withContainer(ctx context.Context, container *contextContainer) context.Con
 	}
 
 	return ctx
+}
+
+// Clone returns a context with an independent request-scoped value container.
+// This is required when concurrent work derives different trace/session values
+// from the same parent context, such as multiplexed WebSocket streams.
+func Clone(ctx context.Context) context.Context {
+	source := getContainer(ctx)
+	source.mu.RLock()
+	clone := &contextContainer{
+		ProjectID:     source.ProjectID,
+		TraceID:       source.TraceID,
+		RequestID:     source.RequestID,
+		OperationName: source.OperationName,
+		APIKey:        source.APIKey,
+		User:          source.User,
+		Source:        source.Source,
+		Thread:        source.Thread,
+		Trace:         source.Trace,
+		Errors:        slices.Clone(source.Errors),
+		ChannelAPIKey: source.ChannelAPIKey,
+	}
+	source.mu.RUnlock()
+
+	return context.WithValue(ctx, containerContextKey, clone)
 }

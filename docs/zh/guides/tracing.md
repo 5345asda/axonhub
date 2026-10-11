@@ -73,7 +73,7 @@ server:
     api_key_model_sticky_secret: "replace-with-a-long-random-secret"
 ```
 
-派生值使用 HMAC，原始 API Key 和模型名不会写入追踪 ID。启用后，派生值优先于客户端提供的追踪请求头。所有 AxonHub 实例必须使用相同的服务端密钥；更换密钥会开始一组新的粘性追踪。没有已认证 API Key 或模型名的请求会继续使用原有追踪解析顺序。要让该追踪标识实际影响渠道选择，系统、模型或 API Key Profile 的 `traceStickyMode` 需保持为 `prefer_previous_channel`（系统默认值）。也可以通过 `AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY` 和 `AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY_SECRET` 环境变量配置。
+派生值使用 HMAC，原始 API Key 和模型名不会写入追踪 ID。启用后，派生值优先于客户端提供的追踪请求头。所有 AxonHub 实例必须使用相同的服务端密钥；更换密钥会开始一组新的粘性追踪。没有已认证 API Key 或模型名的请求会继续使用原有追踪解析顺序。JSON HTTP 请求使用顶层 `model` 字段（Gemini 的 `:generateContent` 和 `:streamGenerateContent` 路径也支持）；Responses WebSocket 则在实际生成 `response.create` 请求时按帧绑定。没有该 JSON 模型契约的 multipart/native-voice 路由不属于此功能范围。Responses WebSocket 升级完成后无法为每一帧补回追踪响应头。要让该追踪标识实际影响渠道选择，系统、模型或 API Key Profile 的 `traceStickyMode` 需保持为 `prefer_previous_channel`（系统默认值）。也可以通过 `AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY` 和 `AXONHUB_SERVER_TRACE_API_KEY_MODEL_STICKY_SECRET` 环境变量配置。
 
 ### 在 OpenAI 兼容客户端中使用追踪
 ```bash

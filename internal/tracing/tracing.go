@@ -2,11 +2,25 @@ package tracing
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"fmt"
+	"io"
+	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/looplj/axonhub/internal/contexts"
+	"github.com/looplj/axonhub/internal/ent/apikey"
+)
+
+const (
+	// APIKeyModelTracePrefix identifies trace IDs derived from an API key and model.
+	APIKeyModelTracePrefix = "akm-v1-"
+	apiKeyModelTraceDomain = "axonhub:api-key-model-sticky:v1"
+	apiKeyModelNoAuthValue = "AXONHUB_API_KEY_NO_AUTH"
 )
 
 type Config struct {
@@ -44,8 +58,8 @@ type Config struct {
 	APIKeyModelSticky bool `conf:"api_key_model_sticky" yaml:"api_key_model_sticky" json:"api_key_model_sticky"`
 
 	// APIKeyModelStickySecret is the server-only HMAC secret used by
-	// APIKeyModelSticky. It is omitted from JSON config previews.
-	APIKeyModelStickySecret string `conf:"api_key_model_sticky_secret" yaml:"api_key_model_sticky_secret" json:"-"`
+	// APIKeyModelSticky. It is omitted from JSON and YAML config previews.
+	APIKeyModelStickySecret string `conf:"api_key_model_sticky_secret" yaml:"-" json:"-"`
 
 	// ClaudeCodeTraceEnabled enables extracting trace IDs from Claude Code request metadata.
 	// Default to true.
@@ -100,4 +114,38 @@ func WithOperationName(ctx context.Context, name string) context.Context {
 // GetOperationName get operation name from context.
 func GetOperationName(ctx context.Context) (string, bool) {
 	return contexts.GetOperationName(ctx)
+}
+
+// APIKeyModelTraceID derives a stable, non-reversible trace ID from the
+// authenticated API key and request model. No-auth requests intentionally do
+// not participate in this affinity scheme.
+func APIKeyModelTraceID(ctx context.Context, model, secret string) (string, error) {
+	apiKey, ok := contexts.GetAPIKey(ctx)
+	if !ok || apiKey == nil || apiKey.Key == "" || apiKey.Key == apiKeyModelNoAuthValue || apiKey.Type == apikey.TypeNoauth {
+		return "", nil
+	}
+
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", nil
+	}
+
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return "", fmt.Errorf("server.trace.api_key_model_sticky_secret must be configured when API key and model sticky tracing is enabled")
+	}
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = io.WriteString(mac, apiKeyModelTraceDomain)
+	writeLengthPrefixed(mac, apiKey.Key)
+	writeLengthPrefixed(mac, model)
+
+	return APIKeyModelTracePrefix + hex.EncodeToString(mac.Sum(nil)), nil
+}
+
+func writeLengthPrefixed(w io.Writer, value string) {
+	var length [8]byte
+	binary.BigEndian.PutUint64(length[:], uint64(len(value)))
+	_, _ = w.Write(length[:])
+	_, _ = io.WriteString(w, value)
 }

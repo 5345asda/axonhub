@@ -39,12 +39,17 @@ type responsesWebSocketProcessFunc func(context.Context, *httpclient.Request) (o
 
 type responsesWebSocketErrorFunc func(context.Context, error) *httpclient.Error
 
+// responsesWebSocketTraceBinder creates an event-local routing context after a
+// response.create frame has been normalized into an HTTP request.
+type responsesWebSocketTraceBinder func(context.Context, *httpclient.Request) (context.Context, error)
+
 // serveResponsesWebSocket implements the downstream Responses WebSocket mode.
 func serveResponsesWebSocket(
 	c *gin.Context,
 	requestTimeout time.Duration,
 	process responsesWebSocketProcessFunc,
 	transformError responsesWebSocketErrorFunc,
+	traceBinders ...responsesWebSocketTraceBinder,
 ) {
 	if !websocket.IsWebSocketUpgrade(c.Request) {
 		JSONError(c, http.StatusBadRequest, errors.New("websocket upgrade required"))
@@ -81,7 +86,11 @@ func serveResponsesWebSocket(
 	defer close(pingDone)
 	go runResponsesWebSocketPings(ctx, conn, pingDone)
 
-	dispatcher := newResponsesWebSocketDispatcher(ctx, cancelSession, conn, writer, c.Request, requestTimeout, process, transformError)
+	var traceBinder responsesWebSocketTraceBinder
+	if len(traceBinders) > 0 {
+		traceBinder = traceBinders[0]
+	}
+	dispatcher := newResponsesWebSocketDispatcher(ctx, cancelSession, conn, writer, c.Request, requestTimeout, process, transformError, traceBinder)
 	defer dispatcher.wait()
 	for {
 		messageType, message, readErr := conn.ReadMessage()
@@ -149,6 +158,7 @@ type responsesWebSocketDispatcher struct {
 	requestTimeout time.Duration
 	process        responsesWebSocketProcessFunc
 	transformError responsesWebSocketErrorFunc
+	traceBinder    responsesWebSocketTraceBinder
 	active         chan struct{}
 	pending        chan struct{}
 	lanes          map[string]*responsesWebSocketLane
@@ -166,6 +176,7 @@ func newResponsesWebSocketDispatcher(
 	requestTimeout time.Duration,
 	process responsesWebSocketProcessFunc,
 	transformError responsesWebSocketErrorFunc,
+	traceBinder responsesWebSocketTraceBinder,
 ) *responsesWebSocketDispatcher {
 	return &responsesWebSocketDispatcher{
 		ctx:            ctx,
@@ -176,6 +187,7 @@ func newResponsesWebSocketDispatcher(
 		requestTimeout: requestTimeout,
 		process:        process,
 		transformError: transformError,
+		traceBinder:    traceBinder,
 		active:         make(chan struct{}, responsesWebSocketMaxActive),
 		pending:        make(chan struct{}, responsesWebSocketMaxPending),
 		lanes:          make(map[string]*responsesWebSocketLane),
@@ -267,9 +279,16 @@ func (d *responsesWebSocketDispatcher) processMessage(session *responsesWebSocke
 	requestCtx := d.ctx
 	cancel := func() {}
 	if d.requestTimeout > 0 {
-		requestCtx, cancel = context.WithTimeout(d.ctx, d.requestTimeout)
+		requestCtx, cancel = context.WithTimeout(requestCtx, d.requestTimeout)
 	}
 	defer cancel()
+	if d.traceBinder != nil {
+		var bindErr error
+		requestCtx, bindErr = d.traceBinder(requestCtx, request)
+		if bindErr != nil {
+			return writeResponsesWebSocketError(d.writer, transformResponsesWebSocketError(requestCtx, bindErr, d.transformError), streamID)
+		}
+	}
 	if request.RawRequest != nil {
 		request.RawRequest = request.RawRequest.WithContext(requestCtx)
 	}

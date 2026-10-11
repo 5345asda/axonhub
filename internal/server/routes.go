@@ -199,7 +199,7 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 	// timeout per response.create event, so it must not inherit the ordinary
 	// single-request timeout from apiGroup.
 	responsesWebSocketGroup := server.Group("/", apiMiddlewares...)
-	responsesWebSocketGroup.GET("/v1/responses", handlers.OpenAI.CreateResponseWebSocket(server.Config.LLMRequestTimeout))
+	responsesWebSocketGroup.GET("/v1/responses", handlers.OpenAI.CreateResponseWebSocket(server.Config.LLMRequestTimeout, server.Config.Trace, services.TraceService))
 	api.RegisterNativeVoiceHTTPRoutes(apiGroup, handlers.NativeVoice)
 	api.RegisterNativeVoiceWebSocketRoutes(responsesWebSocketGroup, handlers.NativeVoice)
 

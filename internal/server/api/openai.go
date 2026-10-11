@@ -20,6 +20,7 @@ import (
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/server/biz"
 	"github.com/looplj/axonhub/internal/server/orchestrator"
+	"github.com/looplj/axonhub/internal/tracing"
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/transformer"
@@ -378,8 +379,9 @@ func (handlers *OpenAIHandlers) CreateResponse(c *gin.Context) {
 	handlers.ResponseCompletionHandlers.ChatCompletion(c)
 }
 
-func (handlers *OpenAIHandlers) CreateResponseWebSocket(requestTimeout time.Duration) gin.HandlerFunc {
+func (handlers *OpenAIHandlers) CreateResponseWebSocket(requestTimeout time.Duration, traceConfig tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
 	orch := handlers.ResponseCompletionHandlers.ChatCompletionOrchestrator
+	traceBinder := newAPIKeyModelTraceBinder(traceConfig, traceService)
 	return func(c *gin.Context) {
 		serveResponsesWebSocket(
 			c,
@@ -388,6 +390,7 @@ func (handlers *OpenAIHandlers) CreateResponseWebSocket(requestTimeout time.Dura
 			func(ctx context.Context, err error) *httpclient.Error {
 				return transformOrchestratorError(ctx, err, orch)
 			},
+			traceBinder,
 		)
 	}
 }

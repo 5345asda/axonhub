@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -84,7 +85,11 @@ func WithTrace(config tracing.Config, traceService *biz.TraceService) gin.Handle
 
 			traceID, err = tryGetTraceIDFromAPIKeyAndModel(c, config.APIKeyModelStickySecret)
 			if err != nil {
-				AbortWithError(c, http.StatusInternalServerError, err)
+				status := http.StatusInternalServerError
+				if errors.Is(err, errAPIKeyModelStickyRequestBody) {
+					status = http.StatusBadRequest
+				}
+				AbortWithError(c, status, err)
 				return
 			}
 		}

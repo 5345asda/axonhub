@@ -2,12 +2,45 @@ package contexts
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/looplj/axonhub/internal/ent"
 	"github.com/looplj/axonhub/internal/ent/request"
 	"github.com/looplj/axonhub/internal/ent/user"
 )
+
+func TestCloneCreatesIndependentContainer(t *testing.T) {
+	parent := WithAPIKey(context.Background(), &ent.APIKey{ID: 1, Key: "parent-key"})
+	parent = WithTraceID(parent, "parent-trace")
+
+	first := Clone(parent)
+	second := Clone(parent)
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		WithTraceID(first, "first-trace")
+	}()
+	go func() {
+		defer wg.Done()
+		WithTraceID(second, "second-trace")
+	}()
+	wg.Wait()
+
+	firstTraceID, ok := GetTraceID(first)
+	if !ok || firstTraceID != "first-trace" {
+		t.Fatalf("first cloned trace ID = %q, %v", firstTraceID, ok)
+	}
+	secondTraceID, ok := GetTraceID(second)
+	if !ok || secondTraceID != "second-trace" {
+		t.Fatalf("second cloned trace ID = %q, %v", secondTraceID, ok)
+	}
+	parentTraceID, ok := GetTraceID(parent)
+	if !ok || parentTraceID != "parent-trace" {
+		t.Fatalf("parent trace ID = %q, %v", parentTraceID, ok)
+	}
+}
 
 func TestWithAPIKey(t *testing.T) {
 	ctx := t.Context()
