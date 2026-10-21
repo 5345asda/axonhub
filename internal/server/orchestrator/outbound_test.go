@@ -1010,6 +1010,19 @@ func (s *sliceEventStream) Close() error {
 	return nil
 }
 
+func TestOutboundPersistentStream_PersistIncompleteUsageWithoutUsageLogService(t *testing.T) {
+	stream := &OutboundPersistentStream{
+		request:     &ent.Request{},
+		requestExec: &ent.RequestExecution{},
+	}
+
+	require.NotPanics(t, func() {
+		stream.persistIncompleteUsage(context.Background(), llm.ResponseMeta{
+			Usage: &llm.Usage{Estimated: true},
+		})
+	})
+}
+
 // TestOutboundPersistentStream_Close_AggregatedResponsesCompletionHandling
 // verifies that aggregated Responses chunks and terminal events produce the
 // correct request execution completion status.

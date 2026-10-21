@@ -163,17 +163,17 @@ func computeUsageCostWithItems(usage *llm.Usage, priceItems []objects.ModelPrice
 
 		switch it.ItemCode {
 		case objects.PriceItemCodeUsage:
-			// Exclude cached tokens from input token cost calculation
-			// PromptTokens includes all tokens, so we subtract:
-			// - CachedTokens (read from cache)
-			// - WriteCachedTokens (write to cache)
-			// These are billed separately at different rates
+			// Most providers include cache tokens in PromptTokens, but
+			// Anthropic-compatible providers can report non-cached input there
+			// and return cache usage separately.
 			quantity = usage.PromptTokens
 			if usage.PromptTokensDetails != nil {
-				quantity -= usage.PromptTokensDetails.CachedTokens
-				quantity -= usage.PromptTokensDetails.WriteCachedTokens
+				cachedTokens := usage.PromptTokensDetails.CachedTokens + usage.PromptTokensDetails.WriteCachedTokens
+				if quantity >= cachedTokens {
+					quantity -= cachedTokens
+				}
 			}
-			// Clamp to non-negative to handle provider bugs or partial data
+			// Clamp to non-negative to handle provider bugs or partial data.
 			if quantity < 0 {
 				quantity = 0
 			}

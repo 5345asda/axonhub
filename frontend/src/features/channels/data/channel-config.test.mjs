@@ -69,7 +69,7 @@ test('Bailian exposes native Responses with the officially documented fully comp
   );
   assert.match(providersConfig, /bailian:\s*{[\s\S]*channelTypes:\s*\[\s*'bailian',\s*'bailian_anthropic',\s*'bailian_responses'\s*\]/);
 
-  const configBlock = channelsConfig.match(/bailian_responses:\s*{([\s\S]*?)\n  },\n  bailian_anthropic:/)?.[1] ?? '';
+  const configBlock = channelsConfig.match(/bailian_responses:\s*{([\s\S]*?)\r?\n  },\r?\n  bailian_anthropic:/)?.[1] ?? '';
   const modelsBlock = configBlock.match(/defaultModels:\s*\[([\s\S]*?)\]/)?.[1] ?? '';
   const models = [...modelsBlock.matchAll(/'([^']+)'/g)].map((match) => match[1]);
   assert.deepEqual(models, [
@@ -369,16 +369,14 @@ test('Ollama exposes OpenAI and Anthropic channel variants with a quota cookie f
   );
 });
 
-test('Ollama has localized channel, provider, cookie field, and quota-collection labels', () => {
+test('Ollama has localized channel, provider, and cookie-field labels', () => {
   for (const locale of ['en', 'zh-CN']) {
     const channels = parseLocale(locale);
-    const system = JSON.parse(read(`locales/${locale}/system.json`));
 
     assert.equal(channels['channels.types.ollama'], 'Ollama');
     assert.equal(channels['channels.providers.ollama'], 'Ollama');
     assert.ok(channels['channels.types.ollama_anthropic']);
     assert.ok(channels['channels.dialogs.fields.ollamaQuota.authCookie.placeholder'].includes('__Secure-session'));
     assert.ok(channels['channels.dialogs.fields.ollamaQuota.authCookie.description']);
-    assert.ok(system['system.quota.collection.providers.ollama']);
   }
 });

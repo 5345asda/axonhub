@@ -161,6 +161,7 @@ func TestUsageLogService_CreateUsageLog_WithPriceReferenceID(t *testing.T) {
 		PromptTokens:     1000,
 		CompletionTokens: 500,
 		TotalTokens:      1500,
+		Estimated:        true,
 	}
 
 	channelID := ch.ID
@@ -185,6 +186,21 @@ func TestUsageLogService_CreateUsageLog_WithPriceReferenceID(t *testing.T) {
 	// Verify cost calculation is correct
 	// (1000 / 1_000_000) * 0.03 + (500 / 1_000_000) * 0.06 = 0.00003 + 0.00003 = 0.00006
 	require.InDelta(t, 0.00006, *created.TotalCost, 0.0000001)
+
+	var promptItem, completionItem *objects.CostItem
+	for i := range created.CostItems {
+		switch created.CostItems[i].ItemCode {
+		case objects.PriceItemCodeUsage:
+			promptItem = &created.CostItems[i]
+		case objects.PriceItemCodeCompletion:
+			completionItem = &created.CostItems[i]
+		}
+	}
+
+	require.NotNil(t, promptItem)
+	require.NotNil(t, completionItem)
+	require.False(t, promptItem.Estimated)
+	require.True(t, completionItem.Estimated)
 }
 
 func TestUsageLogService_CreateUsageLog_WithCachedTokens(t *testing.T) {

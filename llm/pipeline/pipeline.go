@@ -12,6 +12,7 @@ import (
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/streams"
 	"github.com/looplj/axonhub/llm/transformer"
+	"github.com/looplj/axonhub/llm/transformer/shared"
 )
 
 // Retryable interface for transformers that support channel switching.
@@ -287,6 +288,9 @@ func (p *pipeline) Process(ctx context.Context, request *httpclient.Request) (*R
 		}
 
 		lastErr = err
+		if shared.IsResponsesRecoveryError(lastErr) {
+			return nil, shared.ResponsesRecoveryError()
+		}
 		if errors.Is(lastErr, transformer.ErrUnsupportedConversion) {
 			return nil, lastErr
 		}
@@ -349,7 +353,15 @@ func (p *pipeline) Process(ctx context.Context, request *httpclient.Request) (*R
 
 		// Add retry delay if configured
 		if p.retryDelay > 0 {
-			time.Sleep(p.retryDelay)
+			timer := time.NewTimer(p.retryDelay)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return nil, lastErr
+			}
 		}
 
 		slog.WarnContext(ctx, "request process failed, retrying...",

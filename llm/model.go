@@ -23,6 +23,10 @@ var (
 	// terminal event. Pipelines may retry it only before meaningful output is
 	// committed to the caller.
 	ErrStreamIncomplete = errors.New("stream ended without terminal event")
+
+	// ErrEmptyResponse means a streaming response completed without meaningful
+	// content. Pipelines may retry it before content is committed.
+	ErrEmptyResponse = errors.New("empty response detected")
 )
 
 // Request is the unified llm request model for AxonHub, to keep compatibility with major app and framework.
@@ -822,14 +826,50 @@ type TopLogprob struct {
 	Bytes   []int   `json:"bytes,omitempty"`
 }
 
+type AccountingEvidence string
+
+const (
+	AccountingEvidenceUnavailable       AccountingEvidence = "unavailable"
+	AccountingEvidenceExplicitFinal     AccountingEvidence = "explicit-final"
+	AccountingEvidenceCleanEndCandidate AccountingEvidence = "clean-end-candidate"
+)
+
+type SourceEndReason string
+
+const (
+	SourceEndUnknown  SourceEndReason = "unknown"
+	SourceEndCleanEOF SourceEndReason = "clean-eof"
+	SourceEndSemantic SourceEndReason = "semantic"
+	SourceEndError    SourceEndReason = "error"
+	SourceEndCanceled SourceEndReason = "canceled"
+	SourceEndBudget   SourceEndReason = "budget"
+)
+
+func (m ResponseMeta) AccountingFinal(sourceEnd SourceEndReason) bool {
+	switch m.AccountingEvidence {
+	case AccountingEvidenceExplicitFinal:
+		return true
+	case AccountingEvidenceCleanEndCandidate:
+		return sourceEnd == SourceEndCleanEOF || sourceEnd == SourceEndSemantic
+	default:
+		return false
+	}
+}
+
 type ResponseMeta struct {
-	ID        string `json:"id"`
-	Usage     *Usage `json:"usage"`
-	Completed bool   `json:"completed,omitempty"`
+	ID                 string             `json:"id"`
+	Usage              *Usage             `json:"usage"`
+	Completed          bool               `json:"completed,omitempty"`
+	AccountingEvidence AccountingEvidence `json:"-"`
 }
 
 // Usage Represents the total token usage per request to OpenAI.
 type Usage struct {
+	// Estimated is true when completion tokens were derived locally because the
+	// provider stream ended before it supplied final usage. It is never exposed
+	// through provider response payloads.
+	Estimated bool `json:"-"`
+
 	// Number of tokens in the prompt, including cached tokens.
 	PromptTokens int64 `json:"prompt_tokens"`
 
@@ -906,8 +946,9 @@ type PromptTokensDetails struct {
 
 // ResponseError represents an error response.
 type ResponseError struct {
-	StatusCode int         `json:"-"`
-	Detail     ErrorDetail `json:"error"`
+	StatusCode         int         `json:"-"`
+	Detail             ErrorDetail `json:"error"`
+	SuppressStatusText bool        `json:"-"`
 
 	// Cause keeps the underlying error (for example a transport failure) so callers
 	// can still match it with errors.Is / errors.As after classification.
@@ -924,7 +965,7 @@ func (e *ResponseError) Unwrap() error {
 
 func (e ResponseError) Error() string {
 	sb := strings.Builder{}
-	if e.StatusCode != 0 {
+	if e.StatusCode != 0 && !e.SuppressStatusText {
 		fmt.Fprintf(&sb, "Request failed: %s, ", http.StatusText(e.StatusCode))
 	}
 

@@ -379,7 +379,19 @@ func (handlers *OpenAIHandlers) CreateResponse(c *gin.Context) {
 	handlers.ResponseCompletionHandlers.ChatCompletion(c)
 }
 
-func (handlers *OpenAIHandlers) CreateResponseWebSocket(requestTimeout time.Duration, traceConfig tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
+// CreateResponseWebSocket preserves the original handler contract for callers
+// that do not provide API-key/model trace persistence.
+func (handlers *OpenAIHandlers) CreateResponseWebSocket(requestTimeout time.Duration) gin.HandlerFunc {
+	return handlers.createResponseWebSocket(requestTimeout, tracing.Config{}, nil)
+}
+
+// CreateResponseWebSocketWithTrace enables API-key/model trace binding for the
+// production route while keeping the legacy helper usable by isolated tests.
+func (handlers *OpenAIHandlers) CreateResponseWebSocketWithTrace(requestTimeout time.Duration, traceConfig tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
+	return handlers.createResponseWebSocket(requestTimeout, traceConfig, traceService)
+}
+
+func (handlers *OpenAIHandlers) createResponseWebSocket(requestTimeout time.Duration, traceConfig tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
 	orch := handlers.ResponseCompletionHandlers.ChatCompletionOrchestrator
 	traceBinder := newAPIKeyModelTraceBinder(traceConfig, traceService)
 	return func(c *gin.Context) {

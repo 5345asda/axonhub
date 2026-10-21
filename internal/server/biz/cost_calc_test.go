@@ -429,6 +429,59 @@ func TestComputeUsageCost_AllTokensCached(t *testing.T) {
 	require.True(t, inputItem.Subtotal.IsZero(), "input subtotal should be 0")
 }
 
+func TestComputeUsageCost_NetPromptTokensWithCacheRead(t *testing.T) {
+	// Anthropic-compatible providers can report prompt_tokens as the non-cached
+	// input amount while returning cache-read tokens separately.
+	usage := &llm.Usage{
+		PromptTokens:     307,
+		CompletionTokens: 116,
+		TotalTokens:      423,
+		PromptTokensDetails: &llm.PromptTokensDetails{
+			CachedTokens: 109824,
+		},
+	}
+
+	price := objects.ModelPrice{
+		Items: []objects.ModelPriceItem{
+			{
+				ItemCode: objects.PriceItemCodeUsage,
+				Pricing: objects.Pricing{
+					Mode:         objects.PricingModeUsagePerUnit,
+					UsagePerUnit: mustDecimalPtr("1"),
+				},
+			},
+			{
+				ItemCode: objects.PriceItemCodeCompletion,
+				Pricing: objects.Pricing{
+					Mode:         objects.PricingModeUsagePerUnit,
+					UsagePerUnit: mustDecimalPtr("1"),
+				},
+			},
+			{
+				ItemCode: objects.PriceItemCodePromptCachedToken,
+				Pricing: objects.Pricing{
+					Mode:         objects.PricingModeUsagePerUnit,
+					UsagePerUnit: mustDecimalPtr("1"),
+				},
+			},
+		},
+	}
+
+	items, total := ComputeUsageCost(usage, price, time.Now())
+
+	var inputItem *objects.CostItem
+	for i := range items {
+		if items[i].ItemCode == objects.PriceItemCodeUsage {
+			inputItem = &items[i]
+			break
+		}
+	}
+
+	require.NotNil(t, inputItem)
+	require.Equal(t, int64(307), inputItem.Quantity)
+	require.InDelta(t, 0.110247, total.InexactFloat64(), 0.0000001)
+}
+
 func TestComputeUsageCost_WithSchedule_Override(t *testing.T) {
 	// Test that when a schedule override matches, the override prices are used
 	usage := &llm.Usage{

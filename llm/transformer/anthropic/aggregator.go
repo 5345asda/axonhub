@@ -20,10 +20,13 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
 	}
 
 	var (
-		messageStart  *StreamEvent
-		contentBlocks []MessageContentBlock
-		usage         *Usage
-		stopReason    *string
+		messageStart      *StreamEvent
+		contentBlocks     []MessageContentBlock
+		usage             *Usage
+		stopReason        *string
+		messageDeltaUsage bool
+		streamError       bool
+		usageEvidence     = llm.AccountingEvidenceUnavailable
 	)
 
 	for _, chunk := range chunks {
@@ -141,6 +144,7 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
 			}
 
 			if event.Usage != nil {
+				messageDeltaUsage = true
 				if usage == nil {
 					usage = event.Usage
 				} else {
@@ -182,7 +186,17 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
 				}
 			}
 		case "message_stop":
-			// Final event, no additional processing needed
+			if messageStart != nil && messageDeltaUsage && !streamError {
+				usageEvidence = llm.AccountingEvidenceExplicitFinal
+			}
+		case "error":
+			streamError = true
+			// An error before message_stop means the message never completed, so
+			// its usage may be partial. An error after message_stop cannot retract
+			// usage the provider already delivered with a completed message.
+			if usageEvidence != llm.AccountingEvidenceExplicitFinal {
+				usageEvidence = llm.AccountingEvidenceUnavailable
+			}
 		}
 	}
 
@@ -226,6 +240,25 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
 		}
 	}
 
+	// A truncated stream can contain a provisional message_start usage snapshot
+	// but no final message_delta/message_stop boundary. Preserve the partial
+	// response while estimating output tokens for diagnostic accounting. The
+	// estimate is explicitly marked so callers never mistake it for provider
+	// authoritative usage.
+	estimatedUsage := false
+	if usageEvidence != llm.AccountingEvidenceExplicitFinal && !messageDeltaUsage {
+		estimatedCompletionTokens := estimateIncompleteStreamCompletionTokens(contentBlocks)
+		if usage != nil || estimatedCompletionTokens > 0 {
+			if usage == nil {
+				usage = &Usage{}
+			}
+
+			usage.OutputTokens = estimatedCompletionTokens
+			estimatedUsage = true
+			message.Usage = usage
+		}
+	}
+
 	data, err := json.Marshal(message)
 	if err != nil {
 		return nil, llm.ResponseMeta{}, err
@@ -233,15 +266,20 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
 
 	// Convert and return usage if available
 	if usage != nil {
+		llmUsage := convertToLlmUsage(usage, platformType)
+		llmUsage.Estimated = estimatedUsage
+
 		return data, llm.ResponseMeta{
-			ID:        message.ID,
-			Usage:     convertToLlmUsage(usage, platformType),
-			Completed: messageStart != nil && stopReason != nil && *stopReason != "",
+			ID:                 message.ID,
+			Usage:              llmUsage,
+			Completed:          messageStart != nil && stopReason != nil && *stopReason != "",
+			AccountingEvidence: usageEvidence,
 		}, nil
 	}
 
 	return data, llm.ResponseMeta{
-		ID:        message.ID,
-		Completed: messageStart != nil && stopReason != nil && *stopReason != "",
+		ID:                 message.ID,
+		Completed:          messageStart != nil && stopReason != nil && *stopReason != "",
+		AccountingEvidence: llm.AccountingEvidenceUnavailable,
 	}, nil
 }
