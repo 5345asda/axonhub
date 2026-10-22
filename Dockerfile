@@ -27,6 +27,12 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     GOTOOLCHAIN=auto go mod download
 
 COPY . .
+RUN sed -i 's/\r$//' \
+    ./scripts/verify-go-sse-dependency-test.sh \
+    ./scripts/verify-go-sse-dependency.sh \
+    && chmod +x \
+    ./scripts/verify-go-sse-dependency-test.sh \
+    ./scripts/verify-go-sse-dependency.sh
 COPY --from=frontend-dist /dist /build/internal/server/static/dist
 
 ENV GO111MODULE=on \
