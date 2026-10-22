@@ -37,7 +37,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     GOTOOLCHAIN=auto go build \
     -tags=nomsgpack \
-    -ldflags "-s -w -X 'github.com/looplj/axonhub/internal/build.Version=$(cat internal/build/VERSION 2>/dev/null || echo dev)' -X 'github.com/looplj/axonhub/internal/build.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
+    -ldflags "-s -w -X 'github.com/looplj/axonhub/internal/build.Version=$(tr -d '\r\n' < internal/build/VERSION 2>/dev/null || echo dev)' -X 'github.com/looplj/axonhub/internal/build.BuildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)'" \
     -o axonhub \
     ./cmd/axonhub && \
     ./scripts/verify-go-sse-dependency-test.sh && \
