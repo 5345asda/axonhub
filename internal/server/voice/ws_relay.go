@@ -168,7 +168,7 @@ func nativeWebSocketDialRequest(ctx context.Context, inbound *http.Request, targ
 	}
 
 	requestHeader := filterNativeWebSocketRelayHeaders(inbound.Header)
-	credentialHeaders := defaultNativeVoiceCredentialHeaders(ctx, target.Channel, target.Protocol, target.Endpoint)
+	credentialHeaders, _ := defaultNativeVoiceCredentialHeaders(ctx, target.Channel, target.Protocol, target.Endpoint)
 	for key, values := range credentialHeaders {
 		requestHeader.Del(key)
 		for _, value := range values {

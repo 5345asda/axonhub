@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -557,6 +558,75 @@ func TestNativeHTTPRelayForwardsFinalMiniMaxBusinessFailure(t *testing.T) {
 	require.JSONEq(t, `{"base_resp":{"status_code":2013,"status_msg":"invalid params"}}`, w.Body.String())
 }
 
+func TestNativeHTTPRelayReportsSelectedKeyAfterCompletedSuccessfulResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0},"data":{"audio":"00"}}`))
+	}))
+	defer upstream.Close()
+
+	target := nativeHTTPTestTarget(t, upstream.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)
+	target.Channel.ID = 101
+	target.Channel.Credentials = objects.ChannelCredentials{APIKey: "test-success-key"}
+	reporter := &nativeAPIKeySuccessReporterCapture{}
+	w := httptest.NewRecorder()
+
+	err := NewNativeHTTPRelay(nil, reporter).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd"}`)),
+		[]NativeRelayTarget{target})
+
+	require.NoError(t, err)
+	require.Equal(t, []nativeAPIKeySuccessCall{{channelID: 101, apiKey: "test-success-key"}}, reporter.Calls())
+}
+
+func TestNativeHTTPRelayDoesNotReportKeySuccessForFinalBusinessFailure(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":1004,"status_msg":"quota"}}`))
+	}))
+	defer upstream.Close()
+
+	target := nativeHTTPTestTarget(t, upstream.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)
+	reporter := &nativeAPIKeySuccessReporterCapture{}
+	w := httptest.NewRecorder()
+
+	err := NewNativeHTTPRelay(nil, reporter).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd"}`)),
+		[]NativeRelayTarget{target})
+
+	require.NoError(t, err)
+	require.Empty(t, reporter.Calls())
+}
+
+func TestNativeHTTPRelayReportsOnlyFinalFallbackKey(t *testing.T) {
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"retry"}`))
+	}))
+	defer first.Close()
+	second := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0},"data":{"audio":"00"}}`))
+	}))
+	defer second.Close()
+
+	firstTarget := nativeHTTPTestTarget(t, first.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)
+	firstTarget.Channel.ID = 101
+	firstTarget.Channel.Credentials = objects.ChannelCredentials{APIKey: "test-first-key"}
+	secondTarget := nativeHTTPTestTarget(t, second.URL, objects.NativeVoiceAPIFormatMiniMaxT2A)
+	secondTarget.Channel.ID = 202
+	secondTarget.Channel.Credentials = objects.ChannelCredentials{APIKey: "test-second-key"}
+	reporter := &nativeAPIKeySuccessReporterCapture{}
+	w := httptest.NewRecorder()
+
+	err := NewNativeHTTPRelay(nil, reporter).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd"}`)),
+		[]NativeRelayTarget{firstTarget, secondTarget})
+
+	require.NoError(t, err)
+	require.Equal(t, []nativeAPIKeySuccessCall{{channelID: 202, apiKey: "test-second-key"}}, reporter.Calls())
+}
+
 func TestNativeHTTPRelayReportsFinalBusinessFailureToObserver(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -647,6 +717,45 @@ func TestNativeHTTPRelayStreamsMiniMaxSSEBeforeUpstreamEOF(t *testing.T) {
 	close(release)
 	require.NoError(t, <-done)
 	require.Contains(t, w.body.String(), "data: ")
+}
+
+func TestNativeHTTPRelayDelaysKeySuccessUntilStreamingResponseCompletes(t *testing.T) {
+	release := make(chan struct{})
+	streamBody := &blockingReadBody{
+		first:   []byte("data: {\"data\":{\"audio\":\"00\"},\"base_resp\":{\"status_code\":0}}\n\n"),
+		release: release,
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       streamBody,
+		}, nil
+	})}
+	target := nativeHTTPTestTarget(t, "http://upstream.test", objects.NativeVoiceAPIFormatMiniMaxT2A)
+	target.Channel.ID = 101
+	target.Channel.Credentials = objects.ChannelCredentials{APIKey: "test-stream-key"}
+	target.Channel.HTTPClient = httpclient.NewHttpClientWithClient(client)
+	reporter := &nativeAPIKeySuccessReporterCapture{}
+	inbound := httptest.NewRequest(http.MethodPost, "http://axonhub.test/v1/t2a_v2", strings.NewReader(`{"stream":true}`))
+	w := newCaptureResponseWriter()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- NewNativeHTTPRelay(nil, reporter).Relay(context.Background(), w, inbound, []NativeRelayTarget{target})
+	}()
+
+	select {
+	case <-w.firstWrite:
+	case <-time.After(500 * time.Millisecond):
+		close(release)
+		require.FailNow(t, "relay waited for the complete stream before forwarding its first event")
+	}
+	require.Empty(t, reporter.Calls())
+
+	close(release)
+	require.NoError(t, <-done)
+	require.Equal(t, []nativeAPIKeySuccessCall{{channelID: 101, apiKey: "test-stream-key"}}, reporter.Calls())
 }
 
 func TestNativeHTTPRelayRetriesMiniMaxStreamingBusinessFailureBeforeCommit(t *testing.T) {
@@ -746,6 +855,29 @@ func TestNativeHTTPRelayDoesNotRetryAfterResponseCommit(t *testing.T) {
 	require.Equal(t, "first", w.Body.String())
 }
 
+func TestNativeHTTPRelayDoesNotReportKeySuccessAfterCommittedStreamError(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       &errorAfterFirstReadBody{},
+		}, nil
+	})}
+	target := nativeHTTPTestTarget(t, "http://upstream.test", objects.NativeVoiceAPIFormatDoubaoTTS)
+	target.Channel.ID = 101
+	target.Channel.Credentials = objects.ChannelCredentials{APIKey: "test-error-key"}
+	target.Channel.HTTPClient = httpclient.NewHttpClientWithClient(client)
+	reporter := &nativeAPIKeySuccessReporterCapture{}
+	w := httptest.NewRecorder()
+
+	err := NewNativeHTTPRelay(nil, reporter).Relay(context.Background(), w,
+		httptest.NewRequest(http.MethodPost, "http://axonhub.test/api/v3/tts/unidirectional", strings.NewReader(`{"text":"hello"}`)),
+		[]NativeRelayTarget{target})
+
+	require.ErrorContains(t, err, "upstream body failed")
+	require.Empty(t, reporter.Calls())
+}
+
 func TestNativeHTTPRelayRetriesAfterEmptyReadBeforeResponseCommit(t *testing.T) {
 	var firstCalls, secondCalls atomic.Int32
 	first := nativeHTTPTestTarget(t, "http://first.test", objects.NativeVoiceAPIFormatDoubaoTTS)
@@ -806,6 +938,28 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 type nativeRelayObserverCapture struct {
 	attempts []NativeRelayAttempt
 	results  []NativeRelayResult
+}
+
+type nativeAPIKeySuccessCall struct {
+	channelID int
+	apiKey    string
+}
+
+type nativeAPIKeySuccessReporterCapture struct {
+	mu    sync.Mutex
+	calls []nativeAPIKeySuccessCall
+}
+
+func (r *nativeAPIKeySuccessReporterCapture) RecordAPIKeySuccess(channelID int, apiKey string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, nativeAPIKeySuccessCall{channelID: channelID, apiKey: apiKey})
+}
+
+func (r *nativeAPIKeySuccessReporterCapture) Calls() []nativeAPIKeySuccessCall {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]nativeAPIKeySuccessCall(nil), r.calls...)
 }
 
 func (o *nativeRelayObserverCapture) OnNativeRelayAttempt(_ context.Context, attempt NativeRelayAttempt) {

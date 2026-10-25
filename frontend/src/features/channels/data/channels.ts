@@ -131,6 +131,8 @@ const CREATE_CHANNEL_MUTATION = `
         passThroughUserAgent
         passThroughBody
         retryableStatusCodes
+        apiKeyStrategy
+        apiKeyRoundRobinSwitchAfter
         retryableErrorPatterns {
           pattern
           regex
@@ -226,6 +228,8 @@ const DUPLICATE_CHANNEL_MUTATION = `
         passThroughUserAgent
         passThroughBody
         retryableStatusCodes
+        apiKeyStrategy
+        apiKeyRoundRobinSwitchAfter
         retryableErrorPatterns {
           pattern
           regex
@@ -321,6 +325,8 @@ const BULK_CREATE_CHANNELS_MUTATION = `
         passThroughUserAgent
         passThroughBody
         retryableStatusCodes
+        apiKeyStrategy
+        apiKeyRoundRobinSwitchAfter
         retryableErrorPatterns {
           pattern
           regex
@@ -415,6 +421,8 @@ const CHANNEL_FIELDS_FRAGMENT = `
         passThroughUserAgent
         passThroughBody
         retryableStatusCodes
+        apiKeyStrategy
+        apiKeyRoundRobinSwitchAfter
         retryableErrorPatterns {
           pattern
           regex
@@ -632,6 +640,8 @@ const BULK_IMPORT_CHANNELS_MUTATION = `
           passThroughUserAgent
           passThroughBody
           retryableStatusCodes
+          apiKeyStrategy
+          apiKeyRoundRobinSwitchAfter
           retryableErrorPatterns {
             pattern
             regex
@@ -874,6 +884,8 @@ const BULK_UPDATE_CHANNEL_ORDERING_MUTATION = `
           passThroughUserAgent
           passThroughBody
           retryableStatusCodes
+          apiKeyStrategy
+          apiKeyRoundRobinSwitchAfter
           retryableErrorPatterns {
             pattern
             regex
@@ -1143,6 +1155,8 @@ const CHANNEL_QUERY_FULL_NODE_SELECTION = `
               queueTimeoutMs
             }
             retryableStatusCodes
+            apiKeyStrategy
+            apiKeyRoundRobinSwitchAfter
             retryableErrorPatterns {
               pattern
               regex

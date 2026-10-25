@@ -100,11 +100,16 @@ func TestCodexCatalog_DoesNotOverwriteRotatedCredentials(t *testing.T) {
 	svc := NewChannelServiceForTest(db)
 	defer svc.Stop()
 
-	db.Channel.UpdateOneID(source.ID).SetCredentials(objects.ChannelCredentials{OAuth: &objects.OAuthCredentials{
-		AccessToken:  "admin-access-token",
-		RefreshToken: "admin-refresh-token",
-		ExpiresAt:    time.Now().Add(time.Hour),
-	}}).SaveX(ctx)
+	db.Channel.UpdateOneID(source.ID).
+		SetCredentials(objects.ChannelCredentials{OAuth: &objects.OAuthCredentials{
+			AccessToken:  "admin-access-token",
+			RefreshToken: "admin-refresh-token",
+			ExpiresAt:    time.Now().Add(time.Hour),
+		}}).
+		// SQLite can retain the create timestamp for an immediate update, which
+		// would mask the intended compare-and-swap conflict.
+		SetUpdatedAt(source.UpdatedAt.Add(time.Second)).
+		SaveX(ctx)
 	err := svc.refreshOAuthTokenWithClient(ctx, db, source, &oauth.OAuthCredentials{
 		AccessToken:  "refreshed-access-token",
 		RefreshToken: "refreshed-refresh-token",

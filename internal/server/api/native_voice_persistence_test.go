@@ -25,6 +25,7 @@ import (
 	"github.com/looplj/axonhub/internal/server/biz"
 	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/internal/server/voice"
+	"github.com/looplj/axonhub/llm/httpclient"
 )
 
 func TestServeNativeVoiceHTTPPersistsFailedBusinessAttempt(t *testing.T) {
@@ -101,6 +102,70 @@ func TestServeNativeVoiceHTTPPersistsFailedBusinessAttempt(t *testing.T) {
 	require.JSONEq(t, body, string(executions[0].RequestBody))
 	require.Equal(t, "******", nativeVoiceStoredHeader(t, executions[0].RequestHeaders, "Authorization"))
 	require.Equal(t, "business-failure", nativeVoiceStoredHeader(t, executions[0].ResponseHeaders, "X-Provider-Request-ID"))
+}
+
+func TestServeNativeVoiceHTTPAdvancesRoundRobinSuccessOnlyAfterSuccessfulRelay(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := ent.NewContext(authz.WithTestBypass(context.Background()), enttest.NewEntClient(t, "sqlite3", "file:native_voice_round_robin_success?mode=memory&_fk=0"))
+	client := ent.FromContext(ctx)
+	t.Cleanup(func() { _ = client.Close() })
+
+	var selectedKeys []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		selectedKeys = append(selectedKeys, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"base_resp":{"status_code":0},"data":{"audio":"00"}}`))
+	}))
+	defer upstream.Close()
+
+	protocol, ok := objects.NativeVoiceProtocolByAPIFormat(objects.NativeVoiceAPIFormatMiniMaxT2A)
+	require.True(t, ok)
+	strategy := objects.APIKeyStrategyRoundRobinSuccess
+	switchAfter := 1
+	channelRow, err := client.Channel.Create().
+		SetName("native voice round robin success").
+		SetType(channel.TypeMinimax).
+		SetStatus(channel.StatusEnabled).
+		SetBaseURL(upstream.URL).
+		SetSupportedModels([]string{"speech-2.8-hd"}).
+		SetDefaultTestModel("speech-2.8-hd").
+		SetSettings(&objects.ChannelSettings{
+			APIKeyStrategy:              &strategy,
+			APIKeyRoundRobinSwitchAfter: &switchAfter,
+		}).
+		SetCredentials(objects.ChannelCredentials{APIKeys: []string{"provider-key-one", "provider-key-two"}}).
+		SetEndpoints([]objects.ChannelEndpoint{{
+			APIFormat: protocol.APIFormat,
+			Path:      protocol.Path,
+			BaseURL:   upstream.URL,
+			Transport: protocol.Transport,
+		}}).
+		Save(ctx)
+	require.NoError(t, err)
+
+	cacheConfig := xcache.Config{Mode: xcache.ModeMemory}
+	channelService := biz.NewChannelService(biz.ChannelServiceParams{
+		CacheConfig:   cacheConfig,
+		Ent:           client,
+		SystemService: biz.NewSystemService(biz.SystemServiceParams{CacheConfig: cacheConfig, Ent: client}),
+		HttpClient:    httpclient.NewHttpClient(),
+	})
+	t.Cleanup(channelService.Stop)
+	require.NotNil(t, channelService.GetEnabledChannel(channelRow.ID), "the real enabled-channel cache must publish the serving snapshot")
+	requestService := newNativeVoicePersistenceRequestService(t, client)
+	selector := voice.NewCandidateSelector(channelService.GetEnabledChannels, nil)
+
+	for range 2 {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		c.Request = httptest.NewRequest(http.MethodPost, "/v1/t2a_v2", strings.NewReader(`{"model":"speech-2.8-hd","text":"hello"}`)).WithContext(ctx)
+
+		serveNativeVoiceHTTP(c, selector, nil, voice.NewNativeHTTPRelay(nil, channelService), requestService)
+
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+
+	require.Equal(t, []string{"Bearer provider-key-one", "Bearer provider-key-two"}, selectedKeys)
 }
 
 func TestServeNativeVoiceHTTPPersistsTransportFailure(t *testing.T) {

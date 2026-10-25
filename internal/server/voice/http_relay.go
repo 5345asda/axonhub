@@ -25,10 +25,10 @@ func defaultNativeVoiceCredentialHeaders(
 	ch *biz.Channel,
 	protocol objects.NativeVoiceProtocol,
 	endpoint objects.ChannelEndpoint,
-) http.Header {
+) (http.Header, string) {
 	headers := make(http.Header)
 	if ch == nil {
-		return headers
+		return headers, ""
 	}
 
 	apiKey := strings.TrimSpace(ch.SelectAPIKey(ctx))
@@ -47,13 +47,14 @@ func defaultNativeVoiceCredentialHeaders(
 		}
 	}
 
-	return headers
+	return headers, apiKey
 }
 
 // NativeHTTPRelay performs exact-path HTTP, SSE and chunked relay for native
 // provider speech endpoints.
 type NativeHTTPRelay struct {
-	admission *NativeRelayAdmission
+	admission           *NativeRelayAdmission
+	apiKeySuccessReport APIKeySuccessReporter
 }
 
 // NativeRelayTarget represents one ordered candidate.
@@ -64,8 +65,8 @@ type NativeRelayTarget struct {
 }
 
 // NewNativeHTTPRelay builds a provider-native HTTP relay.
-func NewNativeHTTPRelay(admission *NativeRelayAdmission) *NativeHTTPRelay {
-	return &NativeHTTPRelay{admission: admission}
+func NewNativeHTTPRelay(admission *NativeRelayAdmission, reporters ...APIKeySuccessReporter) *NativeHTTPRelay {
+	return &NativeHTTPRelay{admission: admission, apiKeySuccessReport: nativeAPIKeySuccessReporter(reporters)}
 }
 
 // Relay forwards a request to ordered same-protocol targets. It retries only
@@ -103,7 +104,7 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 		nativeAttemptID++
 		attemptStartedAt := time.Now()
 
-		outboundReq, buildErr := r.buildNativeHTTPRelayRequest(ctx, inbound, body, target)
+		outboundReq, selectedAPIKey, buildErr := r.buildNativeHTTPRelayRequest(ctx, inbound, body, target)
 		if buildErr != nil {
 			notifyNativeRelayAttempt(ctx, NativeRelayAttempt{
 				ID:        nativeAttemptID,
@@ -234,6 +235,10 @@ func (r *NativeHTTPRelay) Relay(ctx context.Context, w http.ResponseWriter, inbo
 		if writeErr != nil {
 			return writeErr
 		}
+		if resp.StatusCode >= http.StatusOK && resp.StatusCode < http.StatusMultipleChoices {
+			// Advance only after the complete native response reached the client.
+			r.recordAPIKeySuccess(target.Channel.ID, selectedAPIKey)
+		}
 		return nil
 	}
 
@@ -263,10 +268,10 @@ func (r *NativeHTTPRelay) buildNativeHTTPRelayRequest(
 	inbound *http.Request,
 	body []byte,
 	target NativeRelayTarget,
-) (*http.Request, error) {
+) (*http.Request, string, error) {
 	upstreamURL, err := buildNativeUpstreamURL(target.Endpoint.BaseURL, target.Protocol.Path, inbound.URL.RawQuery)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	outboundBody := body
@@ -298,7 +303,7 @@ func (r *NativeHTTPRelay) buildNativeHTTPRelayRequest(
 
 	req, err := http.NewRequestWithContext(ctx, inbound.Method, upstreamURL.String(), bytes.NewReader(outboundBody))
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	req.Header = filterNativeHTTPRelayRequestHeaders(inbound.Header)
@@ -308,7 +313,7 @@ func (r *NativeHTTPRelay) buildNativeHTTPRelayRequest(
 		req.Header.Set("Accept-Encoding", "identity")
 	}
 
-	credentialHeaders := defaultNativeVoiceCredentialHeaders(ctx, target.Channel, target.Protocol, target.Endpoint)
+	credentialHeaders, selectedAPIKey := defaultNativeVoiceCredentialHeaders(ctx, target.Channel, target.Protocol, target.Endpoint)
 	for key, values := range credentialHeaders {
 		req.Header.Del(key)
 		for _, value := range values {
@@ -316,7 +321,14 @@ func (r *NativeHTTPRelay) buildNativeHTTPRelayRequest(
 		}
 	}
 
-	return req, nil
+	return req, selectedAPIKey, nil
+}
+
+func (r *NativeHTTPRelay) recordAPIKeySuccess(channelID int, apiKey string) {
+	if r == nil || r.apiKeySuccessReport == nil || channelID <= 0 || apiKey == "" {
+		return
+	}
+	r.apiKeySuccessReport.RecordAPIKeySuccess(channelID, apiKey)
 }
 
 func nativeHTTPClientForChannel(ch *biz.Channel) *http.Client {

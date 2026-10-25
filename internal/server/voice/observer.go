@@ -21,6 +21,21 @@ type NativeRelayObserver interface {
 	OnNativeRelayResult(context.Context, NativeRelayResult)
 }
 
+// APIKeySuccessReporter receives only successful provider-key uses. It stays
+// separate from relay telemetry so raw keys cannot enter persisted attempts.
+type APIKeySuccessReporter interface {
+	RecordAPIKeySuccess(channelID int, apiKey string)
+}
+
+func nativeAPIKeySuccessReporter(reporters []APIKeySuccessReporter) APIKeySuccessReporter {
+	for _, reporter := range reporters {
+		if reporter != nil {
+			return reporter
+		}
+	}
+	return nil
+}
+
 // NativeRelayAttempt identifies one provider connection attempt. URL is the
 // normalized upstream URL without userinfo or query parameters. ChannelID is
 // sufficient for telemetry and avoids exposing the in-memory channel entity.

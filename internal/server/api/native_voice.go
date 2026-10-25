@@ -88,7 +88,7 @@ func NewNativeVoiceHandlers(params NativeVoiceHandlersParams) *NativeVoiceHandle
 
 	selector := voice.NewCandidateSelector(channelService.GetEnabledChannels, loadBalancer.SortAllWithoutTracking)
 	admission := voice.NewNativeRelayAdmission(params.ChannelLimiterManager, rateLimitTracker)
-	httpRelay := voice.NewNativeHTTPRelay(admission)
+	httpRelay := voice.NewNativeHTTPRelay(admission, channelService)
 	wsRelay := voice.NewNativeWebSocketRelay(admission)
 
 	handlers := &NativeVoiceHandlers{}

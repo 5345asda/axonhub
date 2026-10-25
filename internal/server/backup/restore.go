@@ -711,6 +711,9 @@ func (svc *BackupService) restoreChannels(ctx context.Context, db *ent.Client, c
 		if credentials.APIKey == "" && len(credentials.APIKeys) == 0 && credentials.OAuth == nil {
 			continue
 		}
+		if err := biz.ValidateAPIKeyStrategy(chData.Settings); err != nil {
+			return fmt.Errorf("invalid API key strategy for channel %q: %w", chData.Name, err)
+		}
 
 		var baseURL *string
 		if chData.BaseURL != "" {

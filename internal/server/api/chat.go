@@ -16,6 +16,7 @@ import (
 	"github.com/looplj/axonhub/internal/contexts"
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/server/orchestrator"
+	"github.com/looplj/axonhub/internal/server/safeguards"
 	"github.com/looplj/axonhub/llm"
 	"github.com/looplj/axonhub/llm/httpclient"
 	"github.com/looplj/axonhub/llm/streams"
@@ -50,21 +51,24 @@ type ChatCompletionHandlers struct {
 	sseKeepAlive               SSEKeepAliveConfig
 	sseHeartbeatFormat         sseHeartbeatFormat
 	streamAdapterFactory       streamAdapterFactory
+	safeguardsConfig           safeguards.Config
+	reviewer                   safeguards.ClassifierFunc
+	inputUsageCache            *inputUsageCache
 }
 
 func NewChatCompletionHandlers(orchestrator *orchestrator.ChatCompletionOrchestrator) *ChatCompletionHandlers {
 	return &ChatCompletionHandlers{
 		ChatCompletionOrchestrator: orchestrator,
 		StreamWriter:               WriteSSEStream,
+		inputUsageCache:            newInputUsageCache(),
 	}
 }
 
 // WithStreamWriter returns a new ChatCompletionHandlers with the specified stream writer.
 func (handlers *ChatCompletionHandlers) WithStreamWriter(writer StreamWriter) *ChatCompletionHandlers {
-	return &ChatCompletionHandlers{
-		ChatCompletionOrchestrator: handlers.ChatCompletionOrchestrator,
-		StreamWriter:               writer,
-	}
+	copy := *handlers
+	copy.StreamWriter = writer
+	return &copy
 }
 
 func (handlers *ChatCompletionHandlers) ChatCompletion(c *gin.Context) {
@@ -83,6 +87,7 @@ func (handlers *ChatCompletionHandlers) ChatCompletion(c *gin.Context) {
 }
 
 func (handlers *ChatCompletionHandlers) ChatCompletionWithRequest(c *gin.Context, genericReq *httpclient.Request) {
+	started := time.Now()
 	ctx := c.Request.Context()
 
 	if genericReq == nil || len(genericReq.Body) == 0 {
@@ -90,9 +95,20 @@ func (handlers *ChatCompletionHandlers) ChatCompletionWithRequest(c *gin.Context
 		return
 	}
 
-	// log.Debug(ctx, "Chat completion request", log.Any("request", genericReq))
+	evaluator, prepared, err := prepareSafeguardsRequest(genericReq, handlers.safeguardsConfig, handlers.reviewer)
+	if err != nil {
+		JSONError(c, http.StatusBadRequest, err)
+		return
+	}
+	genericReq = prepared
 
-	result, err := handlers.ChatCompletionOrchestrator.Process(ctx, genericReq)
+	processCtx := ctx
+	var abortUpstream context.CancelFunc
+	if evaluator != nil {
+		processCtx, abortUpstream = context.WithCancel(ctx)
+		defer abortUpstream()
+	}
+	result, err := handlers.ChatCompletionOrchestrator.Process(processCtx, genericReq)
 	if err != nil {
 		log.Error(ctx, "Error processing chat completion", log.Cause(err))
 
@@ -113,7 +129,12 @@ func (handlers *ChatCompletionHandlers) ChatCompletionWithRequest(c *gin.Context
 			contentType = ct
 		}
 
-		c.Data(resp.StatusCode, contentType, resp.Body)
+		body, err := evaluator.AnnotateResponse(ctx, resp.Body)
+		if err != nil {
+			JSONError(c, http.StatusBadGateway, err)
+			return
+		}
+		c.Data(resp.StatusCode, contentType, body)
 
 		return
 	}
@@ -133,7 +154,9 @@ func (handlers *ChatCompletionHandlers) ChatCompletionWithRequest(c *gin.Context
 
 		c.Header("Access-Control-Allow-Origin", "*")
 
-		stream := newUpstreamErrorStream(ctx, result.ChatCompletionStream, handlers.ChatCompletionOrchestrator.SystemService)
+		source := wrapAnthropicInputUsage(result.ChatCompletionStream, genericReq, newInputUsageCalibration(ctx, handlers.inputUsageCache, result.Route, started))
+		source = wrapSafeguardsStream(ctx, source, evaluator, abortUpstream)
+		stream := newUpstreamErrorStream(ctx, source, handlers.ChatCompletionOrchestrator.SystemService)
 		if strings.HasSuffix(genericReq.Path, "/responses") {
 			stream = primeCodexTurnStateHeader(c.Writer.Header(), stream)
 		}
