@@ -26,7 +26,7 @@ $LogFile = Join-Path $BaseDir 'axonhub.log'
 $DefaultPort = 8090
 
 function Show-Usage {
-  Write-Host @" 
+  Write-Host @"
 Usage: start.bat
 
 This script starts AxonHub directly (no service manager).
@@ -93,7 +93,9 @@ Ensure-Dirs $BaseDir
 if(Test-Path $PidFile){
   try {
     $processId = Get-Content -Path $PidFile -ErrorAction Stop
-    if($processId -and (Get-Process -Id $processId -ErrorAction SilentlyContinue)){
+    # A live PID alone does not prove it is our process: Windows recycles PIDs, so a PID
+    # left over from a previous run (typically after a reboot) can belong to anything.
+    if($processId -and (Get-Process -Id $processId -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -eq 'axonhub' })){
       Write-Warn "AxonHub is already running (PID: $processId)"
       exit 0
     } else {
@@ -113,11 +115,11 @@ if(-not (Check-Port $port)){
 }
 
 $ConfigArgs = @()
-if(Test-Path $ConfigFile){ 
+if(Test-Path $ConfigFile){
   # The process working directory below makes this config discoverable.
-  Write-Info "Configuration found at $ConfigFile, binary will auto-detect it" 
-} else { 
-  Write-Warn "Configuration not found at $ConfigFile, starting with defaults" 
+  Write-Info "Configuration found at $ConfigFile, binary will auto-detect it"
+} else {
+  Write-Warn "Configuration not found at $ConfigFile, starting with defaults"
 }
 
 Write-Info 'Starting AxonHub process...'
