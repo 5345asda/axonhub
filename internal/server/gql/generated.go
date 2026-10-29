@@ -570,6 +570,12 @@ type ComplexityRoot struct {
 		Pattern   func(childComplexity int) int
 	}
 
+	ChannelResponseTimeout struct {
+		Mode                            func(childComplexity int) int
+		NonStreamResponseTimeoutSeconds func(childComplexity int) int
+		StreamFirstEventTimeoutSeconds  func(childComplexity int) int
+	}
+
 	ChannelSettings struct {
 		APIKeyRoundRobinSwitchAfter func(childComplexity int) int
 		APIKeyStrategy              func(childComplexity int) int
@@ -589,6 +595,7 @@ type ComplexityRoot struct {
 		Proxy                       func(childComplexity int) int
 		QuotaRoutingMode            func(childComplexity int) int
 		RateLimit                   func(childComplexity int) int
+		ResponseTimeout             func(childComplexity int) int
 		RetryableErrorPatterns      func(childComplexity int) int
 		RetryableStatusCodes        func(childComplexity int) int
 		TransformOptions            func(childComplexity int) int
@@ -4472,6 +4479,25 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.ChannelRegexAssociation.Pattern(childComplexity), true
 
+	case "ChannelResponseTimeout.mode":
+		if e.complexity.ChannelResponseTimeout.Mode == nil {
+			break
+		}
+
+		return e.complexity.ChannelResponseTimeout.Mode(childComplexity), true
+	case "ChannelResponseTimeout.nonStreamResponseTimeoutSeconds":
+		if e.complexity.ChannelResponseTimeout.NonStreamResponseTimeoutSeconds == nil {
+			break
+		}
+
+		return e.complexity.ChannelResponseTimeout.NonStreamResponseTimeoutSeconds(childComplexity), true
+	case "ChannelResponseTimeout.streamFirstEventTimeoutSeconds":
+		if e.complexity.ChannelResponseTimeout.StreamFirstEventTimeoutSeconds == nil {
+			break
+		}
+
+		return e.complexity.ChannelResponseTimeout.StreamFirstEventTimeoutSeconds(childComplexity), true
+
 	case "ChannelSettings.apiKeyRoundRobinSwitchAfter":
 		if e.complexity.ChannelSettings.APIKeyRoundRobinSwitchAfter == nil {
 			break
@@ -4580,6 +4606,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.ChannelSettings.RateLimit(childComplexity), true
+	case "ChannelSettings.responseTimeout":
+		if e.complexity.ChannelSettings.ResponseTimeout == nil {
+			break
+		}
+
+		return e.complexity.ChannelSettings.ResponseTimeout(childComplexity), true
 	case "ChannelSettings.retryableErrorPatterns":
 		if e.complexity.ChannelSettings.RetryableErrorPatterns == nil {
 			break
@@ -12197,6 +12229,7 @@ func (e *executableSchema) Exec(ctx context.Context) graphql.ResponseHandler {
 		ec.unmarshalInputChannelProviderQuotaSettingsInput,
 		ec.unmarshalInputChannelRateLimitInput,
 		ec.unmarshalInputChannelRegexAssociationInput,
+		ec.unmarshalInputChannelResponseTimeoutInput,
 		ec.unmarshalInputChannelSettingsInput,
 		ec.unmarshalInputChannelTagsModelAssociationInput,
 		ec.unmarshalInputChannelTagsRegexAssociationInput,
@@ -21449,6 +21482,8 @@ func (ec *executionContext) fieldContext_Channel_settings(_ context.Context, fie
 				return ec.fieldContext_ChannelSettings_retryableErrorPatterns(ctx, field)
 			case "maxSingleChannelRetries":
 				return ec.fieldContext_ChannelSettings_maxSingleChannelRetries(ctx, field)
+			case "responseTimeout":
+				return ec.fieldContext_ChannelSettings_responseTimeout(ctx, field)
 			case "modelProtocols":
 				return ec.fieldContext_ChannelSettings_modelProtocols(ctx, field)
 			case "apiKeyStrategy":
@@ -25792,6 +25827,93 @@ func (ec *executionContext) fieldContext_ChannelRegexAssociation_pattern(_ conte
 	return fc, nil
 }
 
+func (ec *executionContext) _ChannelResponseTimeout_mode(ctx context.Context, field graphql.CollectedField, obj *objects.ChannelResponseTimeoutSettings) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_ChannelResponseTimeout_mode,
+		func(ctx context.Context) (any, error) {
+			return obj.Mode, nil
+		},
+		nil,
+		ec.marshalOChannelResponseTimeoutMode2githubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelResponseTimeoutMode,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_ChannelResponseTimeout_mode(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChannelResponseTimeout",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type ChannelResponseTimeoutMode does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChannelResponseTimeout_streamFirstEventTimeoutSeconds(ctx context.Context, field graphql.CollectedField, obj *objects.ChannelResponseTimeoutSettings) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_ChannelResponseTimeout_streamFirstEventTimeoutSeconds,
+		func(ctx context.Context) (any, error) {
+			return obj.StreamFirstEventTimeoutSeconds, nil
+		},
+		nil,
+		ec.marshalOInt2ᚖint,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_ChannelResponseTimeout_streamFirstEventTimeoutSeconds(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChannelResponseTimeout",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChannelResponseTimeout_nonStreamResponseTimeoutSeconds(ctx context.Context, field graphql.CollectedField, obj *objects.ChannelResponseTimeoutSettings) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_ChannelResponseTimeout_nonStreamResponseTimeoutSeconds,
+		func(ctx context.Context) (any, error) {
+			return obj.NonStreamResponseTimeoutSeconds, nil
+		},
+		nil,
+		ec.marshalOInt2ᚖint,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_ChannelResponseTimeout_nonStreamResponseTimeoutSeconds(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChannelResponseTimeout",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _ChannelSettings_extraModelPrefix(ctx context.Context, field graphql.CollectedField, obj *objects.ChannelSettings) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -26337,6 +26459,43 @@ func (ec *executionContext) fieldContext_ChannelSettings_maxSingleChannelRetries
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type Int does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _ChannelSettings_responseTimeout(ctx context.Context, field graphql.CollectedField, obj *objects.ChannelSettings) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_ChannelSettings_responseTimeout,
+		func(ctx context.Context) (any, error) {
+			return obj.ResponseTimeout, nil
+		},
+		nil,
+		ec.marshalOChannelResponseTimeout2ᚖgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelResponseTimeoutSettings,
+		true,
+		false,
+	)
+}
+
+func (ec *executionContext) fieldContext_ChannelSettings_responseTimeout(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "ChannelSettings",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			switch field.Name {
+			case "mode":
+				return ec.fieldContext_ChannelResponseTimeout_mode(ctx, field)
+			case "streamFirstEventTimeoutSeconds":
+				return ec.fieldContext_ChannelResponseTimeout_streamFirstEventTimeoutSeconds(ctx, field)
+			case "nonStreamResponseTimeoutSeconds":
+				return ec.fieldContext_ChannelResponseTimeout_nonStreamResponseTimeoutSeconds(ctx, field)
+			}
+			return nil, fmt.Errorf("no field named %q was found under type ChannelResponseTimeout", field.Name)
 		},
 	}
 	return fc, nil
@@ -71404,6 +71563,47 @@ func (ec *executionContext) unmarshalInputChannelRegexAssociationInput(ctx conte
 	return it, nil
 }
 
+func (ec *executionContext) unmarshalInputChannelResponseTimeoutInput(ctx context.Context, obj any) (objects.ChannelResponseTimeoutSettings, error) {
+	var it objects.ChannelResponseTimeoutSettings
+	asMap := map[string]any{}
+	for k, v := range obj.(map[string]any) {
+		asMap[k] = v
+	}
+
+	fieldsInOrder := [...]string{"mode", "streamFirstEventTimeoutSeconds", "nonStreamResponseTimeoutSeconds"}
+	for _, k := range fieldsInOrder {
+		v, ok := asMap[k]
+		if !ok {
+			continue
+		}
+		switch k {
+		case "mode":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("mode"))
+			data, err := ec.unmarshalOChannelResponseTimeoutMode2githubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelResponseTimeoutMode(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.Mode = data
+		case "streamFirstEventTimeoutSeconds":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("streamFirstEventTimeoutSeconds"))
+			data, err := ec.unmarshalOInt2ᚖint(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.StreamFirstEventTimeoutSeconds = data
+		case "nonStreamResponseTimeoutSeconds":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("nonStreamResponseTimeoutSeconds"))
+			data, err := ec.unmarshalOInt2ᚖint(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.NonStreamResponseTimeoutSeconds = data
+		}
+	}
+
+	return it, nil
+}
+
 func (ec *executionContext) unmarshalInputChannelSettingsInput(ctx context.Context, obj any) (objects.ChannelSettings, error) {
 	var it objects.ChannelSettings
 	asMap := map[string]any{}
@@ -71411,7 +71611,7 @@ func (ec *executionContext) unmarshalInputChannelSettingsInput(ctx context.Conte
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"extraModelPrefix", "modelMappings", "autoTrimedModelPrefixes", "hideOriginalModels", "hideMappedModels", "lowercaseModelId", "proxy", "transformOptions", "headerOverrideOperations", "bodyOverrideOperations", "passThroughUserAgent", "passThroughBody", "rateLimit", "retryableStatusCodes", "retryableErrorPatterns", "maxSingleChannelRetries", "modelProtocols", "apiKeyStrategy", "apiKeyRoundRobinSwitchAfter", "providerQuota", "quotaRoutingMode"}
+	fieldsInOrder := [...]string{"extraModelPrefix", "modelMappings", "autoTrimedModelPrefixes", "hideOriginalModels", "hideMappedModels", "lowercaseModelId", "proxy", "transformOptions", "headerOverrideOperations", "bodyOverrideOperations", "passThroughUserAgent", "passThroughBody", "rateLimit", "retryableStatusCodes", "retryableErrorPatterns", "maxSingleChannelRetries", "responseTimeout", "modelProtocols", "apiKeyStrategy", "apiKeyRoundRobinSwitchAfter", "providerQuota", "quotaRoutingMode"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -71530,6 +71730,13 @@ func (ec *executionContext) unmarshalInputChannelSettingsInput(ctx context.Conte
 				return it, err
 			}
 			it.MaxSingleChannelRetries = data
+		case "responseTimeout":
+			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("responseTimeout"))
+			data, err := ec.unmarshalOChannelResponseTimeoutInput2ᚖgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelResponseTimeoutSettings(ctx, v)
+			if err != nil {
+				return it, err
+			}
+			it.ResponseTimeout = data
 		case "modelProtocols":
 			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("modelProtocols"))
 			data, err := ec.unmarshalOModelProtocolInput2ᚕgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐModelProtocolᚄ(ctx, v)
@@ -98470,6 +98677,46 @@ func (ec *executionContext) _ChannelRegexAssociation(ctx context.Context, sel as
 	return out
 }
 
+var channelResponseTimeoutImplementors = []string{"ChannelResponseTimeout"}
+
+func (ec *executionContext) _ChannelResponseTimeout(ctx context.Context, sel ast.SelectionSet, obj *objects.ChannelResponseTimeoutSettings) graphql.Marshaler {
+	fields := graphql.CollectFields(ec.OperationContext, sel, channelResponseTimeoutImplementors)
+
+	out := graphql.NewFieldSet(fields)
+	deferred := make(map[string]*graphql.FieldSet)
+	for i, field := range fields {
+		switch field.Name {
+		case "__typename":
+			out.Values[i] = graphql.MarshalString("ChannelResponseTimeout")
+		case "mode":
+			out.Values[i] = ec._ChannelResponseTimeout_mode(ctx, field, obj)
+		case "streamFirstEventTimeoutSeconds":
+			out.Values[i] = ec._ChannelResponseTimeout_streamFirstEventTimeoutSeconds(ctx, field, obj)
+		case "nonStreamResponseTimeoutSeconds":
+			out.Values[i] = ec._ChannelResponseTimeout_nonStreamResponseTimeoutSeconds(ctx, field, obj)
+		default:
+			panic("unknown field " + strconv.Quote(field.Name))
+		}
+	}
+	out.Dispatch(ctx)
+	if out.Invalids > 0 {
+		return graphql.Null
+	}
+
+	atomic.AddInt32(&ec.deferred, int32(len(deferred)))
+
+	for label, dfs := range deferred {
+		ec.processDeferredGroup(graphql.DeferredGroup{
+			Label:    label,
+			Path:     graphql.GetPath(ctx),
+			FieldSet: dfs,
+			Context:  ctx,
+		})
+	}
+
+	return out
+}
+
 var channelSettingsImplementors = []string{"ChannelSettings"}
 
 func (ec *executionContext) _ChannelSettings(ctx context.Context, sel ast.SelectionSet, obj *objects.ChannelSettings) graphql.Marshaler {
@@ -98581,6 +98828,8 @@ func (ec *executionContext) _ChannelSettings(ctx context.Context, sel ast.Select
 			out.Values[i] = ec._ChannelSettings_retryableErrorPatterns(ctx, field, obj)
 		case "maxSingleChannelRetries":
 			out.Values[i] = ec._ChannelSettings_maxSingleChannelRetries(ctx, field, obj)
+		case "responseTimeout":
+			out.Values[i] = ec._ChannelSettings_responseTimeout(ctx, field, obj)
 		case "modelProtocols":
 			out.Values[i] = ec._ChannelSettings_modelProtocols(ctx, field, obj)
 		case "apiKeyStrategy":
@@ -123375,6 +123624,31 @@ func (ec *executionContext) unmarshalOChannelRegexAssociationInput2ᚖgithubᚗc
 	}
 	res, err := ec.unmarshalInputChannelRegexAssociationInput(ctx, v)
 	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalOChannelResponseTimeout2ᚖgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelResponseTimeoutSettings(ctx context.Context, sel ast.SelectionSet, v *objects.ChannelResponseTimeoutSettings) graphql.Marshaler {
+	if v == nil {
+		return graphql.Null
+	}
+	return ec._ChannelResponseTimeout(ctx, sel, v)
+}
+
+func (ec *executionContext) unmarshalOChannelResponseTimeoutInput2ᚖgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelResponseTimeoutSettings(ctx context.Context, v any) (*objects.ChannelResponseTimeoutSettings, error) {
+	if v == nil {
+		return nil, nil
+	}
+	res, err := ec.unmarshalInputChannelResponseTimeoutInput(ctx, v)
+	return &res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) unmarshalOChannelResponseTimeoutMode2githubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelResponseTimeoutMode(ctx context.Context, v any) (objects.ChannelResponseTimeoutMode, error) {
+	var res objects.ChannelResponseTimeoutMode
+	err := res.UnmarshalGQL(v)
+	return res, graphql.ErrorOnPath(ctx, err)
+}
+
+func (ec *executionContext) marshalOChannelResponseTimeoutMode2githubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelResponseTimeoutMode(ctx context.Context, sel ast.SelectionSet, v objects.ChannelResponseTimeoutMode) graphql.Marshaler {
+	return v
 }
 
 func (ec *executionContext) marshalOChannelSettings2ᚖgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋobjectsᚐChannelSettings(ctx context.Context, sel ast.SelectionSet, v *objects.ChannelSettings) graphql.Marshaler {
