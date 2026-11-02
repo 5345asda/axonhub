@@ -865,11 +865,6 @@ type ResponseMeta struct {
 
 // Usage Represents the total token usage per request to OpenAI.
 type Usage struct {
-	// Estimated is true when completion tokens were derived locally because the
-	// provider stream ended before it supplied final usage. It is never exposed
-	// through provider response payloads.
-	Estimated bool `json:"-"`
-
 	// Number of tokens in the prompt, including cached tokens.
 	PromptTokens int64 `json:"prompt_tokens"`
 

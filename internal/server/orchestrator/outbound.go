@@ -327,7 +327,7 @@ func (ts *OutboundPersistentStream) finalizeClose() error {
 		persistCtx, cancel := xcontext.DetachWithTimeout(ctx, 10*time.Second)
 		defer cancel()
 
-		ts.persistIncompleteUsage(persistCtx, meta)
+		ts.persistFailureChunks(persistCtx)
 		ts.persistExecutionFailure(persistCtx, decision.cause)
 
 		return ts.stream.Close()
@@ -340,7 +340,7 @@ func (ts *OutboundPersistentStream) finalizeClose() error {
 
 		// Upstream dropped mid-stream (clean EOF, no terminal). Persist what we
 		// buffered so operators can inspect the truncated generation.
-		ts.persistIncompleteUsage(persistCtx, meta)
+		ts.persistFailureChunks(persistCtx)
 
 		ts.persistExecutionFailure(persistCtx, decision.cause)
 
@@ -439,13 +439,6 @@ func (ts *OutboundPersistentStream) persistResponseChunks(ctx context.Context, s
 			ts.state.AccountingSourceEnd = sourceEnd
 		}
 
-		// An Anthropic protocol error can terminate a partial stream after its
-		// aggregator has locally estimated output tokens. Preserve that explicit
-		// estimate without relaxing the authoritative-accounting gate below.
-		if ts.terminalState == streamTerminalFailed || ts.terminalState == streamTerminalIncomplete {
-			ts.persistEstimatedUsage(persistCtx, meta)
-		}
-
 		ts.persistAggregatedResponse(persistCtx, responseBody, meta, sourceEnd)
 	}
 }
@@ -460,27 +453,6 @@ func (ts *OutboundPersistentStream) persistFailureChunks(ctx context.Context) {
 
 	if err := ts.RequestService.SaveRequestExecutionChunks(ctx, ts.requestExec.ID, ts.responseChunks); err != nil {
 		log.Warn(ctx, "Failed to save request execution chunks after stream failure", log.Cause(err))
-	}
-}
-
-// persistIncompleteUsage preserves locally-estimated Anthropic output tokens
-// without changing the failed execution into a completed execution. Provider
-// usage with no final-evidence boundary remains excluded by default.
-func (ts *OutboundPersistentStream) persistIncompleteUsage(ctx context.Context, meta llm.ResponseMeta) {
-	ts.persistFailureChunks(ctx)
-	ts.persistEstimatedUsage(ctx, meta)
-}
-
-// persistEstimatedUsage records only locally-derived partial usage. Provider
-// usage without final evidence remains subject to the regular accounting gate.
-func (ts *OutboundPersistentStream) persistEstimatedUsage(ctx context.Context, meta llm.ResponseMeta) {
-	if ts.requestExec == nil || ts.request == nil || ts.UsageLogService == nil || meta.Usage == nil || !meta.Usage.Estimated {
-		return
-	}
-
-	if _, err := ts.UsageLogService.CreateUsageLogFromRequest(ctx, ts.request, ts.requestExec, meta.Usage); err != nil {
-		log.Warn(ctx, "Failed to create usage log from incomplete stream", log.Cause(err))
-		ts.persistenceErr = errors.Join(ts.persistenceErr, err)
 	}
 }
 

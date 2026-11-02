@@ -180,19 +180,6 @@ func (s *UsageLogService) CreateUsageLog(ctx context.Context, params CreateUsage
 	)
 
 	costItems, totalCost, priceReferenceID = s.computeUsageCost(ctx, params.ChannelID, params.ActualModelID, params.Usage)
-	if params.Usage.Estimated {
-		for i := range costItems {
-			if costItems[i].ItemCode == objects.PriceItemCodeCompletion {
-				costItems[i].Estimated = true
-			}
-		}
-
-		log.Warn(ctx, "Creating usage log from estimated completion tokens",
-			log.Int("request_id", params.RequestID),
-			log.Int("channel_id", params.ChannelID),
-			log.Int64("completion_tokens", params.Usage.CompletionTokens),
-		)
-	}
 
 	mut = mut.
 		SetNillableTotalCost(totalCost).

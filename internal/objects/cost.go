@@ -11,7 +11,6 @@ type TierCost struct {
 type CostItem struct {
 	ItemCode                    PriceItemCode               `json:"itemCode"`
 	PromptWriteCacheVariantCode PromptWriteCacheVariantCode `json:"promptWriteCacheVariantCode,omitempty"`
-	Estimated                   bool                        `json:"estimated,omitempty"`
 	Quantity                    int64                       `json:"quantity"`
 	TierBreakdown               []TierCost                  `json:"tierBreakdown,omitempty"`
 	Subtotal                    decimal.Decimal             `json:"subtotal"`

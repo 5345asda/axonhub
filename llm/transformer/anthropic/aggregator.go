@@ -240,25 +240,6 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
 		}
 	}
 
-	// A truncated stream can contain a provisional message_start usage snapshot
-	// but no final message_delta/message_stop boundary. Preserve the partial
-	// response while estimating output tokens for diagnostic accounting. The
-	// estimate is explicitly marked so callers never mistake it for provider
-	// authoritative usage.
-	estimatedUsage := false
-	if usageEvidence != llm.AccountingEvidenceExplicitFinal && !messageDeltaUsage {
-		estimatedCompletionTokens := estimateIncompleteStreamCompletionTokens(contentBlocks)
-		if usage != nil || estimatedCompletionTokens > 0 {
-			if usage == nil {
-				usage = &Usage{}
-			}
-
-			usage.OutputTokens = estimatedCompletionTokens
-			estimatedUsage = true
-			message.Usage = usage
-		}
-	}
-
 	data, err := json.Marshal(message)
 	if err != nil {
 		return nil, llm.ResponseMeta{}, err
@@ -266,12 +247,9 @@ func AggregateStreamChunks(ctx context.Context, chunks []*httpclient.StreamEvent
 
 	// Convert and return usage if available
 	if usage != nil {
-		llmUsage := convertToLlmUsage(usage, platformType)
-		llmUsage.Estimated = estimatedUsage
-
 		return data, llm.ResponseMeta{
 			ID:                 message.ID,
-			Usage:              llmUsage,
+			Usage:              convertToLlmUsage(usage, platformType),
 			Completed:          messageStart != nil && stopReason != nil && *stopReason != "",
 			AccountingEvidence: usageEvidence,
 		}, nil

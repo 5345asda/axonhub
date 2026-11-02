@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"encoding/json"
 	"testing"
 
@@ -48,7 +49,7 @@ func TestBackupService_RestoreRejectsInvalidAPIKeyStrategyAndRollsBack(t *testin
 	data, err := json.Marshal(backupData)
 	require.NoError(t, err)
 
-	err = service.Restore(ctx, data, RestoreOptions{
+	err = service.Restore(ctx, bytes.NewReader(data), RestoreOptions{
 		IncludeChannels:         true,
 		ChannelConflictStrategy: ConflictStrategyOverwrite,
 	})
@@ -84,7 +85,7 @@ func TestBackupService_RestoreSkipsCredentiallessChannelBeforeStrategyValidation
 	data, err := json.Marshal(backupData)
 	require.NoError(t, err)
 
-	err = service.Restore(ctx, data, RestoreOptions{
+	err = service.Restore(ctx, bytes.NewReader(data), RestoreOptions{
 		IncludeChannels:         true,
 		ChannelConflictStrategy: ConflictStrategyOverwrite,
 	})
