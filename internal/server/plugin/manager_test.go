@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/MoeForge/moejs"
 	"github.com/stretchr/testify/require"
 
 	"github.com/looplj/axonhub/internal/authz"
@@ -43,7 +44,7 @@ func TestManagerRefreshAfterCommit(t *testing.T) {
 	require.NoError(t, err)
 	defer tx.Rollback()
 	txCtx := ent.NewContext(ent.NewTxContext(ctx, tx), tx.Client())
-	result, err := manager.Install(txCtx, uiZip(t, nil, nil), nil)
+	result, err := manager.Install(txCtx, uiZip(t, nil, nil), nil, nil)
 	require.NoError(t, err)
 	require.Nil(t, manager.Current().ByID(result.Plugin.ID))
 	require.NoError(t, tx.Commit())
@@ -109,7 +110,7 @@ func TestManagerInstallDisabled(t *testing.T) {
 	manager := newTestManager(t, client)
 	ctx := pluginCtx()
 
-	_, err := manager.Install(ctx, []byte("not a zip"), &[]string{"read_channels"})
+	_, err := manager.Install(ctx, []byte("not a zip"), &[]string{"read_channels"}, nil)
 	require.Error(t, err)
 	count, err := client.Plugin.Query().Count(ctx)
 	require.NoError(t, err)
@@ -118,14 +119,14 @@ func TestManagerInstallDisabled(t *testing.T) {
 	reserved := uiZip(t, func(_ *testing.T, manifest map[string]any) {
 		manifest["id"] = "axonhub.webhook"
 	}, nil)
-	_, err = manager.Install(ctx, reserved, nil)
+	_, err = manager.Install(ctx, reserved, nil, nil)
 	require.ErrorContains(t, err, "reserved")
 	count, err = client.Plugin.Query().Count(ctx)
 	require.NoError(t, err)
 	require.Zero(t, count)
 
 	submitted := []string{"read_channels", "webhook"}
-	result, err := manager.Install(ctx, uiZip(t, nil, nil), &submitted)
+	result, err := manager.Install(ctx, uiZip(t, nil, nil), &submitted, nil)
 	require.NoError(t, err)
 	require.Nil(t, result.Preview)
 	require.NotNil(t, result.Plugin)
@@ -159,12 +160,12 @@ func TestManagerEnableAndRefresh(t *testing.T) {
 	installed := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": html}))
 	require.Zero(t, manager.PackageReads())
 
-	err := manager.Enable(ctx, installed.ID, []string{"write_channels"})
+	err := manager.Enable(ctx, installed.ID, []string{"write_channels"}, nil)
 	require.ErrorContains(t, err, "write_channels")
 	require.Zero(t, manager.PackageReads())
 	require.Equal(t, RuntimeStatusDisabled, manager.Current().ByID(installed.ID).Status)
 
-	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels", "webhook"}))
+	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels", "webhook"}, nil))
 	require.Equal(t, int64(1), manager.PackageReads())
 
 	current := manager.Current().ByID(installed.ID)
@@ -190,7 +191,7 @@ func TestManagerDisableAndSettings(t *testing.T) {
 	ctx := pluginCtx()
 	html := "<html>kept</html>"
 	installed := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": html}))
-	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels"}))
+	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels"}, nil))
 	reads := manager.PackageReads()
 	dir := manager.Current().ByID(installed.ID).ResourceDir()
 	require.NotEmpty(t, dir)
@@ -216,7 +217,7 @@ func TestManagerDisableAndSettings(t *testing.T) {
 	require.Equal(t, reads, manager.PackageReads())
 	require.Equal(t, float64(4), configNumber(t, manager.Current().ByID(installed.ID).Config["threshold"]))
 
-	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels"}))
+	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels"}, nil))
 	require.Equal(t, reads+1, manager.PackageReads())
 	restoredPlugin := manager.Current().ByID(installed.ID)
 	require.Equal(t, dir, restoredPlugin.ResourceDir())
@@ -264,8 +265,8 @@ func TestManagerUpgradeVersion(t *testing.T) {
 		manifest["id"] = "acme.other-tool"
 		manifest["name"] = "Other"
 	}, map[string]string{"ui/page.html": "<html>other</html>"}))
-	require.NoError(t, manager.Enable(ctx, first.ID, []string{"webhook"}))
-	require.NoError(t, manager.Enable(ctx, second.ID, nil))
+	require.NoError(t, manager.Enable(ctx, first.ID, []string{"webhook"}, nil))
+	require.NoError(t, manager.Enable(ctx, second.ID, nil, nil))
 	require.Equal(t, int64(2), manager.PackageReads())
 
 	plugins := manager.Current().Plugins()
@@ -276,7 +277,7 @@ func TestManagerUpgradeVersion(t *testing.T) {
 	result, err := manager.Install(ctx, uiZip(t, func(_ *testing.T, manifest map[string]any) {
 		manifest["version"] = "1.2.0"
 		manifest["name"] = "Failover Guard 2"
-	}, map[string]string{"ui/page.html": "<html>v2</html>"}), nil)
+	}, map[string]string{"ui/page.html": "<html>v2</html>"}), nil, nil)
 	require.NoError(t, err)
 	require.Nil(t, result.Preview)
 	require.True(t, result.Plugin.Enabled)
@@ -306,14 +307,14 @@ func TestManagerUpgradePreview(t *testing.T) {
 	manager := newTestManager(t, client)
 	ctx := pluginCtx()
 	installed := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": "<html>old</html>"}))
-	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels", "webhook"}))
+	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels", "webhook"}, nil))
 
 	next := uiZip(t, func(_ *testing.T, manifest map[string]any) {
 		manifest["version"] = "1.1.0"
 		manifest["permissions"] = []any{"read_channels", "webhook", "write_channels"}
 	}, map[string]string{"ui/page.html": "<html>new</html>"})
 	reads := manager.PackageReads()
-	preview, err := manager.Install(ctx, next, nil)
+	preview, err := manager.Install(ctx, next, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, preview.Preview)
 	require.Equal(t, "1.0.0", preview.Preview.CurrentVersion)
@@ -333,7 +334,7 @@ func TestManagerUpgradePreview(t *testing.T) {
 	require.Equal(t, "<html>old</html>", string(body))
 
 	grant := []string{"webhook", "write_channels", "read_channels"}
-	upgraded, err := manager.Install(ctx, next, &grant)
+	upgraded, err := manager.Install(ctx, next, &grant, nil)
 	require.NoError(t, err)
 	require.Nil(t, upgraded.Preview)
 	require.True(t, upgraded.Plugin.Enabled)
@@ -353,11 +354,97 @@ func TestManagerUpgradePreview(t *testing.T) {
 		manifest["name"] = "Other"
 		manifest["version"] = "2.0.0"
 		manifest["permissions"] = []any{"read_channels", "write_channels"}
-	}, map[string]string{"ui/page.html": "<html>other2</html>"}), nil)
+	}, map[string]string{"ui/page.html": "<html>other2</html>"}), nil, nil)
 	require.NoError(t, err)
 	require.Nil(t, direct.Preview)
 	require.False(t, direct.Plugin.Enabled)
 	require.Equal(t, disabled.ID, direct.Plugin.ID)
+	require.Equal(t, "2.0.0", direct.Plugin.Version)
+}
+
+func TestManagerNetworkGrant(t *testing.T) {
+	client := newPluginDB(t)
+	manager := newTestManager(t, client)
+	ctx := pluginCtx()
+	const exact = "https://example.com/v1/check"
+	const added = "https://example.com/v1/added"
+
+	installed := installUI(t, manager, uiZip(t, func(_ *testing.T, manifest map[string]any) {
+		manifest["network"] = []any{exact}
+	}, map[string]string{"ui/page.html": "<html>net</html>"}))
+	require.Empty(t, installed.GrantedNetwork)
+	require.Empty(t, installed.GrantedPermissions)
+
+	explicit := []string{exact}
+	created, err := manager.Install(ctx, uiZip(t, func(_ *testing.T, manifest map[string]any) {
+		manifest["id"] = "acme.net-explicit"
+		manifest["name"] = "Explicit"
+		manifest["network"] = []any{exact}
+	}, map[string]string{"ui/page.html": "<html>explicit</html>"}), nil, &explicit)
+	require.NoError(t, err)
+	require.Equal(t, explicit, created.Plugin.GrantedNetwork)
+	require.Empty(t, created.Plugin.GrantedPermissions)
+
+	outside := []string{"https://evil.example/nope"}
+	before, err := client.Plugin.Query().Count(ctx)
+	require.NoError(t, err)
+	_, err = manager.Install(ctx, uiZip(t, func(_ *testing.T, manifest map[string]any) {
+		manifest["id"] = "acme.net-rejected"
+		manifest["name"] = "Rejected"
+		manifest["network"] = []any{exact}
+	}, map[string]string{"ui/page.html": "<html>no</html>"}), nil, &outside)
+	require.ErrorContains(t, err, "evil.example")
+	after, err := client.Plugin.Query().Count(ctx)
+	require.NoError(t, err)
+	require.Equal(t, before, after)
+
+	require.ErrorContains(t, manager.Enable(ctx, installed.ID, nil, outside), "evil.example")
+	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels"}, []string{exact}))
+	require.Equal(t, []string{exact}, manager.Current().ByID(installed.ID).GrantedNetwork)
+
+	next := uiZip(t, func(_ *testing.T, manifest map[string]any) {
+		manifest["version"] = "1.1.0"
+		manifest["network"] = []any{exact, added}
+	}, map[string]string{"ui/page.html": "<html>new</html>"})
+	preview, err := manager.Install(ctx, next, nil, nil)
+	require.NoError(t, err)
+	require.NotNil(t, preview.Preview)
+	require.Equal(t, []string{added}, preview.Preview.Network)
+	row, err := client.Plugin.Get(ctx, installed.ID)
+	require.NoError(t, err)
+	require.Equal(t, "1.0.0", row.Version)
+	require.Equal(t, []string{exact}, row.GrantedNetwork)
+
+	grant := []string{"read_channels", "webhook"}
+	upgraded, err := manager.Install(ctx, next, &grant, nil)
+	require.NoError(t, err)
+	require.Nil(t, upgraded.Preview)
+	require.Equal(t, "1.1.0", upgraded.Plugin.Version)
+	require.Equal(t, []string{exact}, upgraded.Plugin.GrantedNetwork)
+
+	onlyAdded := []string{added}
+	confirmed, err := manager.Install(ctx, next, nil, &onlyAdded)
+	require.NoError(t, err)
+	require.Nil(t, confirmed.Preview)
+	require.Equal(t, onlyAdded, confirmed.Plugin.GrantedNetwork)
+
+	badGrant := []string{"https://evil.example/nope"}
+	_, err = manager.Install(ctx, next, nil, &badGrant)
+	require.ErrorContains(t, err, "evil.example")
+	row, err = client.Plugin.Get(ctx, installed.ID)
+	require.NoError(t, err)
+	require.Equal(t, onlyAdded, row.GrantedNetwork)
+	require.Equal(t, "1.1.0", row.Version)
+
+	require.NoError(t, manager.Disable(ctx, installed.ID))
+	direct, err := manager.Install(ctx, uiZip(t, func(_ *testing.T, manifest map[string]any) {
+		manifest["version"] = "2.0.0"
+		manifest["network"] = []any{exact}
+	}, map[string]string{"ui/page.html": "<html>direct</html>"}), nil, nil)
+	require.NoError(t, err)
+	require.Nil(t, direct.Preview)
+	require.False(t, direct.Plugin.Enabled)
+	require.Empty(t, direct.Plugin.GrantedNetwork)
 	require.Equal(t, "2.0.0", direct.Plugin.Version)
 }
 
@@ -368,7 +455,7 @@ func TestManagerSecretDowngrade(t *testing.T) {
 	const secret = "top-secret-token-value"
 
 	installed := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": "<html>secret</html>"}))
-	require.NoError(t, manager.Enable(ctx, installed.ID, nil))
+	require.NoError(t, manager.Enable(ctx, installed.ID, nil, nil))
 	require.NoError(t, manager.UpdateSettings(ctx, installed.ID, 100, map[string]any{
 		"token":     secret,
 		"threshold": 3,
@@ -379,7 +466,7 @@ func TestManagerSecretDowngrade(t *testing.T) {
 		manifest["version"] = "1.3.0"
 		token := propertiesOf(t, manifest)["token"].(map[string]any)
 		delete(token, "format")
-	}, map[string]string{"ui/page.html": "<html>downgrade</html>"}), nil)
+	}, map[string]string{"ui/page.html": "<html>downgrade</html>"}), nil, nil)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "token")
 	require.NotContains(t, err.Error(), secret)
@@ -400,7 +487,7 @@ func TestManagerDelete(t *testing.T) {
 	ctx := pluginCtx()
 
 	installed := installUI(t, manager, uiZip(t, nil, nil))
-	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels"}))
+	require.NoError(t, manager.Enable(ctx, installed.ID, []string{"read_channels"}, nil))
 	require.NoError(t, manager.UpdateSettings(ctx, installed.ID, 12, map[string]any{"threshold": 9, "token": "old-token"}))
 	dir := manager.Current().ByID(installed.ID).ResourceDir()
 
@@ -443,8 +530,8 @@ func TestManagerTwoInstances(t *testing.T) {
 	require.Equal(t, RuntimeStatusDisabled, managerB.Current().ByID(first.ID).Status)
 	require.Zero(t, managerB.PackageReads())
 
-	require.NoError(t, managerA.Enable(ctx, first.ID, []string{"read_channels"}))
-	require.NoError(t, managerA.Enable(ctx, second.ID, nil))
+	require.NoError(t, managerA.Enable(ctx, first.ID, []string{"read_channels"}, nil))
+	require.NoError(t, managerA.Enable(ctx, second.ID, nil, nil))
 	require.Equal(t, RuntimeStatusActive, managerA.Current().ByID(first.ID).Status)
 	require.Equal(t, RuntimeStatusDisabled, managerB.Current().ByID(first.ID).Status)
 
@@ -476,7 +563,7 @@ func TestManagerInFlightGeneration(t *testing.T) {
 	manager := newTestManager(t, client)
 	ctx := pluginCtx()
 	installed := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": "<html>old</html>"}))
-	require.NoError(t, manager.Enable(ctx, installed.ID, nil))
+	require.NoError(t, manager.Enable(ctx, installed.ID, nil, nil))
 
 	old := manager.Current()
 	require.NoError(t, old.Acquire())
@@ -487,7 +574,7 @@ func TestManagerInFlightGeneration(t *testing.T) {
 
 	_, err = manager.Install(ctx, uiZip(t, func(_ *testing.T, manifest map[string]any) {
 		manifest["version"] = "1.2.0"
-	}, map[string]string{"ui/page.html": "<html>new</html>"}), nil)
+	}, map[string]string{"ui/page.html": "<html>new</html>"}), nil, nil)
 	require.NoError(t, err)
 	require.ErrorIs(t, old.Acquire(), ErrGenerationClosed)
 
@@ -521,7 +608,7 @@ func TestManagerRebuildTempDir(t *testing.T) {
 	ctx := pluginCtx()
 	html := "<html>rebuild</html>"
 	installed := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": html}))
-	require.NoError(t, manager.Enable(ctx, installed.ID, nil))
+	require.NoError(t, manager.Enable(ctx, installed.ID, nil, nil))
 	dir := manager.Current().ByID(installed.ID).ResourceDir()
 	require.NoError(t, os.RemoveAll(dir))
 
@@ -544,7 +631,7 @@ func TestManagerExtractFailure(t *testing.T) {
 	ctx := pluginCtx()
 	html := "<html>ok</html>"
 	healthy := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": html}))
-	require.NoError(t, manager.Enable(ctx, healthy.ID, nil))
+	require.NoError(t, manager.Enable(ctx, healthy.ID, nil, nil))
 
 	manager.extract = func([]byte, string) ([]string, error) {
 		return nil, errors.New("disk full")
@@ -555,7 +642,7 @@ func TestManagerExtractFailure(t *testing.T) {
 	}, map[string]string{"ui/page.html": "<html>broken</html>"})
 	broken := installUI(t, manager, brokenZip)
 	reads := manager.PackageReads()
-	require.NoError(t, manager.Enable(ctx, broken.ID, nil))
+	require.NoError(t, manager.Enable(ctx, broken.ID, nil, nil))
 	require.Equal(t, reads+1, manager.PackageReads())
 
 	statuses := map[int]RuntimeStatusEntry{}
@@ -587,15 +674,110 @@ func TestManagerUIOnlyNoVM(t *testing.T) {
 		"ui/page.html": "<html>ui</html>",
 		"ui/app.js":    "console.log('browser')",
 	}))
-	require.NoError(t, manager.Enable(ctx, installed.ID, nil))
+	require.NoError(t, manager.Enable(ctx, installed.ID, nil, nil))
 	require.NoError(t, manager.Refresh(ctx))
 	require.Equal(t, int64(1), manager.PackageReads())
 	assertNoRuntime(t, manager.Current())
 	assertNoPayload(t, manager.Current())
 	require.Equal(t, 0, manager.VMCount())
+	require.Nil(t, manager.Current().ByID(installed.ID).resource.compiledModule())
+	require.False(t, manager.Current().ByID(installed.ID).resource.hasPluginJS)
 	script, err := manager.Current().ByID(installed.ID).ReadFile("ui/app.js")
 	require.NoError(t, err)
 	require.Equal(t, "console.log('browser')", string(script))
+}
+
+func TestManagerJSCompileReuse(t *testing.T) {
+	client := newPluginDB(t)
+	manager := newTestManager(t, client)
+	ctx := pluginCtx()
+	compiles := 0
+	manager.compileModule = func(data []byte) (*moejs.Module, error) {
+		compiles++
+		return compilePackageModule(data)
+	}
+
+	uiPlugin := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": "<html>ui</html>"}))
+	require.NoError(t, manager.Enable(ctx, uiPlugin.ID, nil, nil))
+	require.Equal(t, 0, compiles)
+	require.Nil(t, manager.Current().ByID(uiPlugin.ID).resource.compiledModule())
+	manager.compileModule = nil
+
+	jsPlugin := installUI(t, manager, uiZip(t, func(_ *testing.T, manifest map[string]any) {
+		manifest["id"] = "acme.js-tool"
+		manifest["name"] = "JS Tool"
+	}, map[string]string{
+		"ui/page.html": "<html>js</html>",
+		"plugin.js":    "import { label } from \"./lib/label.js\"\nexport function onEvent() { return label }\n",
+		"lib/label.js": "export const label = \"ok\"\n",
+	}))
+	reads := manager.PackageReads()
+	require.NoError(t, manager.Enable(ctx, jsPlugin.ID, nil, nil))
+	require.Equal(t, 0, compiles)
+	require.Equal(t, reads+1, manager.PackageReads())
+
+	current := manager.Current().ByID(jsPlugin.ID)
+	require.Equal(t, RuntimeStatusActive, current.Status)
+	module := current.resource.compiledModule()
+	require.NotNil(t, module)
+	require.Contains(t, module.Exports(), "onEvent")
+	require.Equal(t, 0, manager.VMCount())
+	require.Equal(t, 0, manager.Current().VMCount())
+	body, err := current.ReadFile("ui/page.html")
+	require.NoError(t, err)
+	require.Equal(t, "<html>js</html>", string(body))
+
+	require.NoError(t, manager.Refresh(ctx))
+	require.Equal(t, 0, compiles)
+	require.Equal(t, reads+1, manager.PackageReads())
+	require.Same(t, module, manager.Current().ByID(jsPlugin.ID).resource.compiledModule())
+
+	require.NoError(t, manager.Disable(ctx, jsPlugin.ID))
+	require.Equal(t, RuntimeStatusDisabled, manager.Current().ByID(jsPlugin.ID).Status)
+	require.Nil(t, manager.Current().ByID(jsPlugin.ID).resource)
+	manager.resourcesMu.Lock()
+	_, resident := manager.resources[resourceKey{id: jsPlugin.ID, sha: jsPlugin.PackageSha256}]
+	uiResource := manager.resources[resourceKey{id: uiPlugin.ID, sha: uiPlugin.PackageSha256}]
+	manager.resourcesMu.Unlock()
+	require.False(t, resident)
+	require.NotNil(t, uiResource)
+	require.Nil(t, uiResource.compiledModule())
+}
+
+func TestManagerJSCompileFailure(t *testing.T) {
+	client := newPluginDB(t)
+	manager := newTestManager(t, client)
+	ctx := pluginCtx()
+	healthy := installUI(t, manager, uiZip(t, nil, map[string]string{"ui/page.html": "<html>ok</html>"}))
+	require.NoError(t, manager.Enable(ctx, healthy.ID, nil, nil))
+
+	manager.compileModule = func([]byte) (*moejs.Module, error) {
+		return nil, errors.New("compile failed")
+	}
+	broken := installUI(t, manager, uiZip(t, func(_ *testing.T, manifest map[string]any) {
+		manifest["id"] = "acme.js-broken"
+		manifest["name"] = "Broken"
+	}, map[string]string{
+		"ui/page.html": "<html>broken</html>",
+		"plugin.js":    "export {}",
+	}))
+	reads := manager.PackageReads()
+	require.NoError(t, manager.Enable(ctx, broken.ID, nil, nil))
+	require.Equal(t, reads+1, manager.PackageReads())
+
+	require.Equal(t, RuntimeStatusActive, manager.Current().ByID(healthy.ID).Status)
+	brokenPlugin := manager.Current().ByID(broken.ID)
+	require.Equal(t, RuntimeStatusError, brokenPlugin.Status)
+	require.Contains(t, brokenPlugin.Reason, "compile failed")
+	require.Nil(t, brokenPlugin.resource)
+	body, err := manager.Current().ByID(healthy.ID).ReadFile("ui/page.html")
+	require.NoError(t, err)
+	require.Equal(t, "<html>ok</html>", string(body))
+
+	require.NoError(t, manager.Refresh(ctx))
+	require.Equal(t, reads+2, manager.PackageReads())
+	require.Equal(t, RuntimeStatusError, manager.Current().ByID(broken.ID).Status)
+	require.Equal(t, RuntimeStatusActive, manager.Current().ByID(healthy.ID).Status)
 }
 
 func newPluginDB(t *testing.T) *ent.Client {
@@ -631,7 +813,7 @@ func pluginCtx() context.Context {
 
 func installUI(t *testing.T, manager *Manager, zip []byte) *ent.Plugin {
 	t.Helper()
-	result, err := manager.Install(pluginCtx(), zip, nil)
+	result, err := manager.Install(pluginCtx(), zip, nil, nil)
 	require.NoError(t, err)
 	require.NotNil(t, result)
 	require.Nil(t, result.Preview)

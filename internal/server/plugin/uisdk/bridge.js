@@ -15,6 +15,7 @@
     TIMEOUT: "Timed out",
     DISPOSED: "Disposed",
     NETWORK_ERROR: "Network error",
+    INVALID_STATE: "Invalid state",
     INTERNAL: "Internal error"
   };
 
@@ -33,6 +34,40 @@
   var pending = new Map();
   var initListeners = new Set();
   var themeListeners = new Set();
+  // Keep this list identical to PLUGIN_UI_TOKEN_NAMES in frontend/src/features/plugins/plugin-ui.ts.
+  var TOKEN_NAMES = [
+    "--background",
+    "--foreground",
+    "--card",
+    "--card-foreground",
+    "--popover",
+    "--popover-foreground",
+    "--primary",
+    "--primary-foreground",
+    "--secondary",
+    "--secondary-foreground",
+    "--muted",
+    "--muted-foreground",
+    "--accent",
+    "--accent-foreground",
+    "--destructive",
+    "--destructive-foreground",
+    "--border",
+    "--input",
+    "--ring",
+    "--radius",
+    "--font-sans",
+    "--font-mono",
+    "--shadow-2xs",
+    "--shadow-xs",
+    "--shadow-sm",
+    "--shadow",
+    "--shadow-md",
+    "--shadow-lg",
+    "--shadow-xl",
+    "--shadow-2xl"
+  ];
+  var TOKEN_VALUE_MAX = 200;
 
   function bridgeError(code, status) {
     var mapped = Object.prototype.hasOwnProperty.call(MESSAGES, code) ? code : "INTERNAL";
@@ -57,8 +92,8 @@
       mapped = "NOT_FOUND";
     } else if (status === 429) {
       mapped = "RATE_LIMITED";
-    } else if (code === "TIMEOUT") {
-      mapped = "TIMEOUT";
+    } else if (code === "TIMEOUT" || code === "NETWORK_ERROR" || code === "INVALID_STATE") {
+      mapped = code;
     } else if (typeof status === "number") {
       mapped = "INTERNAL";
     } else if (Object.prototype.hasOwnProperty.call(MESSAGES, code)) {
@@ -133,10 +168,69 @@
     return value;
   }
 
+  function isTokenValue(value) {
+    if (typeof value !== "string" || value.length === 0 || value.length > TOKEN_VALUE_MAX) {
+      return false;
+    }
+    for (var i = 0; i < value.length; i++) {
+      var code = value.charCodeAt(i);
+      if (code <= 31 || code === 127) {
+        return false;
+      }
+    }
+    return value.indexOf(";") === -1 && value.indexOf("{") === -1 && value.indexOf("}") === -1 &&
+      value.indexOf("<") === -1 && value.indexOf(">") === -1 && value.indexOf("\\") === -1;
+  }
+
+  function sanitizeTokens(raw) {
+    var tokens = {};
+    if (!isPlainObject(raw)) {
+      return tokens;
+    }
+    for (var i = 0; i < TOKEN_NAMES.length; i++) {
+      var name = TOKEN_NAMES[i];
+      if (isTokenValue(raw[name])) {
+        tokens[name] = raw[name];
+      }
+    }
+    return tokens;
+  }
+
+  function sameTokens(left, right) {
+    for (var i = 0; i < TOKEN_NAMES.length; i++) {
+      var name = TOKEN_NAMES[i];
+      var a = left && Object.prototype.hasOwnProperty.call(left, name) ? left[name] : undefined;
+      var b = right && Object.prototype.hasOwnProperty.call(right, name) ? right[name] : undefined;
+      if (a !== b) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function applyThemeStyle() {
+    var root = typeof document !== "undefined" ? document.documentElement : null;
+    if (!root || !root.style || typeof root.style.setProperty !== "function") {
+      return;
+    }
+    var tokens = currentTheme && currentTheme.tokens ? currentTheme.tokens : {};
+    for (var i = 0; i < TOKEN_NAMES.length; i++) {
+      var name = TOKEN_NAMES[i];
+      if (Object.prototype.hasOwnProperty.call(tokens, name)) {
+        root.style.setProperty(name, tokens[name]);
+      } else if (typeof root.style.removeProperty === "function") {
+        root.style.removeProperty(name);
+      }
+    }
+    var scheme = currentTheme && currentTheme.theme === "dark" ? "dark" : "light";
+    root.style.setProperty("color-scheme", scheme);
+  }
+
   function themeSnapshot() {
-    return Object.freeze({
+    return freezeDeep({
       theme: currentTheme.theme,
-      colorScheme: currentTheme.colorScheme
+      colorScheme: currentTheme.colorScheme,
+      tokens: cloneJSON(currentTheme.tokens || {})
     });
   }
 
@@ -239,11 +333,15 @@
       return;
     }
     sessionId = data.sessionId;
-    initPayload = freezeDeep(cloneJSON(data.payload));
+    var payload = cloneJSON(data.payload);
+    payload.tokens = sanitizeTokens(payload.tokens);
+    initPayload = freezeDeep(payload);
     currentTheme = {
       theme: initPayload.theme,
-      colorScheme: initPayload.colorScheme
+      colorScheme: initPayload.colorScheme,
+      tokens: initPayload.tokens
     };
+    applyThemeStyle();
     readySettled = true;
     clearReadyTimer();
     if (readyResolve) {
@@ -277,13 +375,21 @@
     if (disposed || !sessionId || data.sessionId !== sessionId || !isPlainObject(data.payload)) {
       return;
     }
-    if (currentTheme && currentTheme.theme === data.payload.theme && currentTheme.colorScheme === data.payload.colorScheme) {
+    var tokens = sanitizeTokens(data.payload.tokens);
+    if (
+      currentTheme &&
+      currentTheme.theme === data.payload.theme &&
+      currentTheme.colorScheme === data.payload.colorScheme &&
+      sameTokens(currentTheme.tokens, tokens)
+    ) {
       return;
     }
     currentTheme = {
       theme: data.payload.theme,
-      colorScheme: data.payload.colorScheme
+      colorScheme: data.payload.colorScheme,
+      tokens: tokens
     };
+    applyThemeStyle();
     notifyTheme();
   }
 
@@ -564,6 +670,49 @@
     return call("toast", { message: message, kind: kind });
   }
 
+  function isFetchMethod(method) {
+    return method === "GET" || method === "POST" || method === "PUT" || method === "PATCH" || method === "DELETE";
+  }
+
+  function fetch(url, init) {
+    if (typeof url !== "string" || url === "") {
+      return Promise.reject(bridgeError("INVALID_ARGUMENT"));
+    }
+    var params = { url: url };
+    if (init !== undefined) {
+      if (!isPlainObject(init)) {
+        return Promise.reject(bridgeError("INVALID_ARGUMENT"));
+      }
+      if (init.method !== undefined) {
+        if (!isFetchMethod(init.method)) {
+          return Promise.reject(bridgeError("INVALID_ARGUMENT"));
+        }
+        params.method = init.method;
+      }
+      if (init.headers !== undefined) {
+        if (!isPlainObject(init.headers)) {
+          return Promise.reject(bridgeError("INVALID_ARGUMENT"));
+        }
+        var keys = Object.keys(init.headers);
+        var headers = {};
+        for (var i = 0; i < keys.length; i++) {
+          if (typeof init.headers[keys[i]] !== "string") {
+            return Promise.reject(bridgeError("INVALID_ARGUMENT"));
+          }
+          headers[keys[i]] = init.headers[keys[i]];
+        }
+        params.headers = headers;
+      }
+      if (init.body !== undefined) {
+        if (typeof init.body !== "string") {
+          return Promise.reject(bridgeError("INVALID_ARGUMENT"));
+        }
+        params.body = init.body;
+      }
+    }
+    return call("fetch", params);
+  }
+
   window.addEventListener("message", onMessage);
   window.addEventListener("error", onError);
   window.addEventListener("unhandledrejection", onRejection);
@@ -575,7 +724,8 @@
     onTheme: onTheme,
     graphql: graphql,
     navigate: navigate,
-    toast: toast
+    toast: toast,
+    fetch: fetch
   };
   window.__axonhubDispose = dispose;
 })();

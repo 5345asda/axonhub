@@ -1092,9 +1092,9 @@ type ComplexityRoot struct {
 		DuplicateChannel                      func(childComplexity int, sourceID objects.GUID, input ent.CreateChannelInput) int
 		EnableAllChannelAPIKeys               func(childComplexity int, channelID objects.GUID) int
 		EnableChannelAPIKey                   func(childComplexity int, channelID objects.GUID, key string) int
-		EnablePlugin                          func(childComplexity int, id objects.GUID, grantedPermissions []string) int
+		EnablePlugin                          func(childComplexity int, id objects.GUID, grantedPermissions []string, grantedNetwork []string) int
 		EnableSelectedChannelAPIKeys          func(childComplexity int, channelID objects.GUID, keys []string) int
-		InstallPlugin                         func(childComplexity int, file graphql.Upload, grantedPermissions []string) int
+		InstallPlugin                         func(childComplexity int, file graphql.Upload, grantedPermissions []string, grantedNetwork []string) int
 		LoadAPIKeyProfileTemplate             func(childComplexity int, input LoadAPIKeyProfileTemplateInput) int
 		PreviewPromptProtectionRule           func(childComplexity int, input PromptProtectionRulePreviewInput) int
 		RefreshProvidersCatalog               func(childComplexity int) int
@@ -1259,8 +1259,10 @@ type ComplexityRoot struct {
 		ConfigFields        func(childComplexity int) int
 		Description         func(childComplexity int) int
 		Enabled             func(childComplexity int) int
+		GrantedNetwork      func(childComplexity int) int
 		GrantedPermissions  func(childComplexity int) int
 		ID                  func(childComplexity int) int
+		ManifestNetwork     func(childComplexity int) int
 		ManifestPermissions func(childComplexity int) int
 		Name                func(childComplexity int) int
 		PluginID            func(childComplexity int) int
@@ -1328,6 +1330,7 @@ type ComplexityRoot struct {
 		CurrentVersion func(childComplexity int) int
 		Events         func(childComplexity int) int
 		Hooks          func(childComplexity int) int
+		Network        func(childComplexity int) int
 		NewVersion     func(childComplexity int) int
 		Pages          func(childComplexity int) int
 		Permissions    func(childComplexity int) int
@@ -2539,8 +2542,8 @@ type MutationResolver interface {
 	BulkDisablePromptProtectionRules(ctx context.Context, ids []*objects.GUID) (bool, error)
 	PreviewPromptProtectionRule(ctx context.Context, input PromptProtectionRulePreviewInput) (*PromptProtectionRulePreviewResult, error)
 	SaveChannelModelPrices(ctx context.Context, channelID objects.GUID, input []*biz.SaveChannelModelPriceInput) ([]*ent.ChannelModelPrice, error)
-	InstallPlugin(ctx context.Context, file graphql.Upload, grantedPermissions []string) (*plugin.InstallView, error)
-	EnablePlugin(ctx context.Context, id objects.GUID, grantedPermissions []string) (*plugin.InstalledPlugin, error)
+	InstallPlugin(ctx context.Context, file graphql.Upload, grantedPermissions []string, grantedNetwork []string) (*plugin.InstallView, error)
+	EnablePlugin(ctx context.Context, id objects.GUID, grantedPermissions []string, grantedNetwork []string) (*plugin.InstalledPlugin, error)
 	DisablePlugin(ctx context.Context, id objects.GUID) (*plugin.InstalledPlugin, error)
 	UpdatePluginSettings(ctx context.Context, id objects.GUID, priority int, config map[string]any) (*plugin.InstalledPlugin, error)
 	DeletePlugin(ctx context.Context, id objects.GUID) (bool, error)
@@ -6963,7 +6966,7 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 			return 0, false
 		}
 
-		return e.complexity.Mutation.EnablePlugin(childComplexity, args["id"].(objects.GUID), args["grantedPermissions"].([]string)), true
+		return e.complexity.Mutation.EnablePlugin(childComplexity, args["id"].(objects.GUID), args["grantedPermissions"].([]string), args["grantedNetwork"].([]string)), true
 	case "Mutation.enableSelectedChannelAPIKeys":
 		if e.complexity.Mutation.EnableSelectedChannelAPIKeys == nil {
 			break
@@ -6985,7 +6988,7 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 			return 0, false
 		}
 
-		return e.complexity.Mutation.InstallPlugin(childComplexity, args["file"].(graphql.Upload), args["grantedPermissions"].([]string)), true
+		return e.complexity.Mutation.InstallPlugin(childComplexity, args["file"].(graphql.Upload), args["grantedPermissions"].([]string), args["grantedNetwork"].([]string)), true
 	case "Mutation.loadApiKeyProfileTemplate":
 		if e.complexity.Mutation.LoadAPIKeyProfileTemplate == nil {
 			break
@@ -8084,6 +8087,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Plugin.Enabled(childComplexity), true
+	case "Plugin.grantedNetwork":
+		if e.complexity.Plugin.GrantedNetwork == nil {
+			break
+		}
+
+		return e.complexity.Plugin.GrantedNetwork(childComplexity), true
 	case "Plugin.grantedPermissions":
 		if e.complexity.Plugin.GrantedPermissions == nil {
 			break
@@ -8096,6 +8105,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Plugin.ID(childComplexity), true
+	case "Plugin.manifestNetwork":
+		if e.complexity.Plugin.ManifestNetwork == nil {
+			break
+		}
+
+		return e.complexity.Plugin.ManifestNetwork(childComplexity), true
 	case "Plugin.manifestPermissions":
 		if e.complexity.Plugin.ManifestPermissions == nil {
 			break
@@ -8345,6 +8360,12 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.PluginUpgradePreview.Hooks(childComplexity), true
+	case "PluginUpgradePreview.network":
+		if e.complexity.PluginUpgradePreview.Network == nil {
+			break
+		}
+
+		return e.complexity.PluginUpgradePreview.Network(childComplexity), true
 	case "PluginUpgradePreview.newVersion":
 		if e.complexity.PluginUpgradePreview.NewVersion == nil {
 			break
@@ -14125,6 +14146,11 @@ func (ec *executionContext) field_Mutation_enablePlugin_args(ctx context.Context
 		return nil, err
 	}
 	args["grantedPermissions"] = arg1
+	arg2, err := graphql.ProcessArgField(ctx, rawArgs, "grantedNetwork", ec.unmarshalNString2ᚕstringᚄ)
+	if err != nil {
+		return nil, err
+	}
+	args["grantedNetwork"] = arg2
 	return args, nil
 }
 
@@ -14157,6 +14183,11 @@ func (ec *executionContext) field_Mutation_installPlugin_args(ctx context.Contex
 		return nil, err
 	}
 	args["grantedPermissions"] = arg1
+	arg2, err := graphql.ProcessArgField(ctx, rawArgs, "grantedNetwork", ec.unmarshalOString2ᚕstringᚄ)
+	if err != nil {
+		return nil, err
+	}
+	args["grantedNetwork"] = arg2
 	return args, nil
 }
 
@@ -41686,7 +41717,7 @@ func (ec *executionContext) _Mutation_installPlugin(ctx context.Context, field g
 		ec.fieldContext_Mutation_installPlugin,
 		func(ctx context.Context) (any, error) {
 			fc := graphql.GetFieldContext(ctx)
-			return ec.resolvers.Mutation().InstallPlugin(ctx, fc.Args["file"].(graphql.Upload), fc.Args["grantedPermissions"].([]string))
+			return ec.resolvers.Mutation().InstallPlugin(ctx, fc.Args["file"].(graphql.Upload), fc.Args["grantedPermissions"].([]string), fc.Args["grantedNetwork"].([]string))
 		},
 		nil,
 		ec.marshalNPluginInstallResult2ᚖgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋserverᚋpluginᚐInstallView,
@@ -41733,7 +41764,7 @@ func (ec *executionContext) _Mutation_enablePlugin(ctx context.Context, field gr
 		ec.fieldContext_Mutation_enablePlugin,
 		func(ctx context.Context) (any, error) {
 			fc := graphql.GetFieldContext(ctx)
-			return ec.resolvers.Mutation().EnablePlugin(ctx, fc.Args["id"].(objects.GUID), fc.Args["grantedPermissions"].([]string))
+			return ec.resolvers.Mutation().EnablePlugin(ctx, fc.Args["id"].(objects.GUID), fc.Args["grantedPermissions"].([]string), fc.Args["grantedNetwork"].([]string))
 		},
 		nil,
 		ec.marshalNPlugin2ᚖgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋserverᚋpluginᚐInstalledPlugin,
@@ -41768,8 +41799,12 @@ func (ec *executionContext) fieldContext_Mutation_enablePlugin(ctx context.Conte
 				return ec.fieldContext_Plugin_builtin(ctx, field)
 			case "grantedPermissions":
 				return ec.fieldContext_Plugin_grantedPermissions(ctx, field)
+			case "grantedNetwork":
+				return ec.fieldContext_Plugin_grantedNetwork(ctx, field)
 			case "manifestPermissions":
 				return ec.fieldContext_Plugin_manifestPermissions(ctx, field)
+			case "manifestNetwork":
+				return ec.fieldContext_Plugin_manifestNetwork(ctx, field)
 			case "configFields":
 				return ec.fieldContext_Plugin_configFields(ctx, field)
 			case "config":
@@ -41839,8 +41874,12 @@ func (ec *executionContext) fieldContext_Mutation_disablePlugin(ctx context.Cont
 				return ec.fieldContext_Plugin_builtin(ctx, field)
 			case "grantedPermissions":
 				return ec.fieldContext_Plugin_grantedPermissions(ctx, field)
+			case "grantedNetwork":
+				return ec.fieldContext_Plugin_grantedNetwork(ctx, field)
 			case "manifestPermissions":
 				return ec.fieldContext_Plugin_manifestPermissions(ctx, field)
+			case "manifestNetwork":
+				return ec.fieldContext_Plugin_manifestNetwork(ctx, field)
 			case "configFields":
 				return ec.fieldContext_Plugin_configFields(ctx, field)
 			case "config":
@@ -41910,8 +41949,12 @@ func (ec *executionContext) fieldContext_Mutation_updatePluginSettings(ctx conte
 				return ec.fieldContext_Plugin_builtin(ctx, field)
 			case "grantedPermissions":
 				return ec.fieldContext_Plugin_grantedPermissions(ctx, field)
+			case "grantedNetwork":
+				return ec.fieldContext_Plugin_grantedNetwork(ctx, field)
 			case "manifestPermissions":
 				return ec.fieldContext_Plugin_manifestPermissions(ctx, field)
+			case "manifestNetwork":
+				return ec.fieldContext_Plugin_manifestNetwork(ctx, field)
 			case "configFields":
 				return ec.fieldContext_Plugin_configFields(ctx, field)
 			case "config":
@@ -43939,6 +43982,35 @@ func (ec *executionContext) fieldContext_Plugin_grantedPermissions(_ context.Con
 	return fc, nil
 }
 
+func (ec *executionContext) _Plugin_grantedNetwork(ctx context.Context, field graphql.CollectedField, obj *plugin.InstalledPlugin) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_Plugin_grantedNetwork,
+		func(ctx context.Context) (any, error) {
+			return obj.GrantedNetwork, nil
+		},
+		nil,
+		ec.marshalNString2ᚕstringᚄ,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_Plugin_grantedNetwork(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Plugin",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
 func (ec *executionContext) _Plugin_manifestPermissions(ctx context.Context, field graphql.CollectedField, obj *plugin.InstalledPlugin) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -43956,6 +44028,35 @@ func (ec *executionContext) _Plugin_manifestPermissions(ctx context.Context, fie
 }
 
 func (ec *executionContext) fieldContext_Plugin_manifestPermissions(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "Plugin",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _Plugin_manifestNetwork(ctx context.Context, field graphql.CollectedField, obj *plugin.InstalledPlugin) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_Plugin_manifestNetwork,
+		func(ctx context.Context) (any, error) {
+			return obj.ManifestNetwork, nil
+		},
+		nil,
+		ec.marshalNString2ᚕstringᚄ,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_Plugin_manifestNetwork(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "Plugin",
 		Field:      field,
@@ -44407,8 +44508,12 @@ func (ec *executionContext) fieldContext_PluginInstallResult_plugin(_ context.Co
 				return ec.fieldContext_Plugin_builtin(ctx, field)
 			case "grantedPermissions":
 				return ec.fieldContext_Plugin_grantedPermissions(ctx, field)
+			case "grantedNetwork":
+				return ec.fieldContext_Plugin_grantedNetwork(ctx, field)
 			case "manifestPermissions":
 				return ec.fieldContext_Plugin_manifestPermissions(ctx, field)
+			case "manifestNetwork":
+				return ec.fieldContext_Plugin_manifestNetwork(ctx, field)
 			case "configFields":
 				return ec.fieldContext_Plugin_configFields(ctx, field)
 			case "config":
@@ -44454,6 +44559,8 @@ func (ec *executionContext) fieldContext_PluginInstallResult_upgradePreview(_ co
 				return ec.fieldContext_PluginUpgradePreview_newVersion(ctx, field)
 			case "permissions":
 				return ec.fieldContext_PluginUpgradePreview_permissions(ctx, field)
+			case "network":
+				return ec.fieldContext_PluginUpgradePreview_network(ctx, field)
 			case "events":
 				return ec.fieldContext_PluginUpgradePreview_events(ctx, field)
 			case "hooks":
@@ -45115,6 +45222,35 @@ func (ec *executionContext) _PluginUpgradePreview_permissions(ctx context.Contex
 }
 
 func (ec *executionContext) fieldContext_PluginUpgradePreview_permissions(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
+	fc = &graphql.FieldContext{
+		Object:     "PluginUpgradePreview",
+		Field:      field,
+		IsMethod:   false,
+		IsResolver: false,
+		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
+			return nil, errors.New("field of type String does not have child fields")
+		},
+	}
+	return fc, nil
+}
+
+func (ec *executionContext) _PluginUpgradePreview_network(ctx context.Context, field graphql.CollectedField, obj *plugin.UpgradePreview) (ret graphql.Marshaler) {
+	return graphql.ResolveField(
+		ctx,
+		ec.OperationContext,
+		field,
+		ec.fieldContext_PluginUpgradePreview_network,
+		func(ctx context.Context) (any, error) {
+			return obj.Network, nil
+		},
+		nil,
+		ec.marshalNString2ᚕstringᚄ,
+		true,
+		true,
+	)
+}
+
+func (ec *executionContext) fieldContext_PluginUpgradePreview_network(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
 	fc = &graphql.FieldContext{
 		Object:     "PluginUpgradePreview",
 		Field:      field,
@@ -53066,8 +53202,12 @@ func (ec *executionContext) fieldContext_Query_plugins(_ context.Context, field 
 				return ec.fieldContext_Plugin_builtin(ctx, field)
 			case "grantedPermissions":
 				return ec.fieldContext_Plugin_grantedPermissions(ctx, field)
+			case "grantedNetwork":
+				return ec.fieldContext_Plugin_grantedNetwork(ctx, field)
 			case "manifestPermissions":
 				return ec.fieldContext_Plugin_manifestPermissions(ctx, field)
+			case "manifestNetwork":
+				return ec.fieldContext_Plugin_manifestNetwork(ctx, field)
 			case "configFields":
 				return ec.fieldContext_Plugin_configFields(ctx, field)
 			case "config":
@@ -106924,8 +107064,18 @@ func (ec *executionContext) _Plugin(ctx context.Context, sel ast.SelectionSet, o
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
+		case "grantedNetwork":
+			out.Values[i] = ec._Plugin_grantedNetwork(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
 		case "manifestPermissions":
 			out.Values[i] = ec._Plugin_manifestPermissions(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "manifestNetwork":
+			out.Values[i] = ec._Plugin_manifestNetwork(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
@@ -107399,6 +107549,11 @@ func (ec *executionContext) _PluginUpgradePreview(ctx context.Context, sel ast.S
 			}
 		case "permissions":
 			out.Values[i] = ec._PluginUpgradePreview_permissions(ctx, field, obj)
+			if out.Values[i] == graphql.Null {
+				out.Invalids++
+			}
+		case "network":
+			out.Values[i] = ec._PluginUpgradePreview_network(ctx, field, obj)
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}

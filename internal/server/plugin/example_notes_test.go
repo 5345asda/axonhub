@@ -6,9 +6,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -55,7 +53,7 @@ func TestExampleNotesPackage(t *testing.T) {
 	raw := zipExampleFiles(t, files)
 	assertExampleNotesPackage(t, raw)
 
-	packed := packExampleWithScript(t, root)
+	packed := packExampleDirectory(t, root)
 	assertExampleNotesPackage(t, packed)
 	reader, err := zip.NewReader(bytes.NewReader(packed), int64(len(packed)))
 	require.NoError(t, err)
@@ -89,24 +87,9 @@ func assertExampleNotesPackage(t *testing.T, raw []byte) {
 	}, pkg.Files)
 }
 
-func packExampleWithScript(t *testing.T, root string) []byte {
+func packExampleDirectory(t *testing.T, root string) []byte {
 	t.Helper()
-	python := "python3"
-	if runtime.GOOS == "windows" {
-		// Windows commonly exposes python3.exe as a Store alias that exits with
-		// 9009; prefer a real python.exe installation there.
-		python = "python"
-	}
-	pythonPath, err := exec.LookPath(python)
-	if err != nil {
-		t.Skipf("%s is not installed", python)
-	}
-	script := filepath.Join("..", "..", "..", "plugin", "scripts", "pack-plugin.py")
-	out := filepath.Join(t.TempDir(), "notes.axplugin")
-	cmd := exec.Command(pythonPath, script, root, "-o", out)
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(output))
-	packed, err := os.ReadFile(out)
+	packed, err := PackDirectory(root)
 	require.NoError(t, err)
 	return packed
 }

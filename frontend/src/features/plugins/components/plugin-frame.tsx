@@ -14,8 +14,12 @@ import {
   bridgeError,
   isPluginSitePath,
   matchPluginBridgeMessage,
+  pluginFetchCallParams,
+  pluginFetchHTTPError,
+  pluginFetchResult,
   pluginHTTPBridgeError,
   pluginProjectId,
+  readPluginUITokens,
   resolvePluginTheme,
   type PluginBridgeMatch,
 } from '../plugin-ui';
@@ -105,11 +109,18 @@ function PluginFrameAttempt({
     return () => media.removeEventListener('change', onChange);
   }, []);
 
-  function initPayload() {
-    const data = sessionDataRef.current;
+  function themePayload() {
     return {
       theme: themeRef.current.theme,
       colorScheme: themeRef.current.colorScheme,
+      tokens: readPluginUITokens(window.getComputedStyle(document.documentElement)),
+    };
+  }
+
+  function initPayload() {
+    const data = sessionDataRef.current;
+    return {
+      ...themePayload(),
       locale: localeRef.current,
       projectId: pluginProjectId(projectRef.current),
       page: pageKeyRef.current,
@@ -198,7 +209,7 @@ function PluginFrameAttempt({
       reply({ ok: false, error: bridgeError('NOT_READY') });
       return;
     }
-    if (call.method !== 'graphql' && call.method !== 'navigate' && call.method !== 'toast') {
+    if (call.method !== 'graphql' && call.method !== 'navigate' && call.method !== 'toast' && call.method !== 'fetch') {
       reply({ ok: false, error: bridgeError('INVALID_ARGUMENT') });
       return;
     }
@@ -233,6 +244,78 @@ function PluginFrameAttempt({
       }
       TOASTS[kind](message);
       reply({ ok: true, result: null });
+      return;
+    }
+    if (call.method === 'fetch') {
+      const outbound = pluginFetchCallParams(call.params);
+      if (!outbound) {
+        reply({ ok: false, error: bridgeError('INVALID_ARGUMENT') });
+        return;
+      }
+      const requestPluginId = pluginId;
+      const requestProjectId = selectedProjectId;
+      const timeoutSignal = AbortSignal.timeout(CALL_TIMEOUT_MS);
+      const signal = AbortSignal.any([session.abort.signal, timeoutSignal]);
+      try {
+        const token = await ensureFreshAccessToken();
+        if (session.disposed || sessionRef.current?.id !== session.id || signal.aborted) {
+          return;
+        }
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (token) {
+          headers.Authorization = `Bearer ${token}`;
+        }
+        if (requestProjectId) {
+          headers['X-Project-ID'] = requestProjectId;
+        }
+        const response = await fetch(`/admin/plugins/${encodeURIComponent(requestPluginId)}/fetch`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(outbound),
+          signal,
+        });
+        if (session.disposed || sessionRef.current?.id !== session.id) {
+          return;
+        }
+        if (!response.ok) {
+          let payload: unknown = null;
+          try {
+            payload = await response.json();
+          } catch {
+            payload = null;
+          }
+          if (session.disposed || sessionRef.current?.id !== session.id) {
+            return;
+          }
+          reply({ ok: false, error: pluginFetchHTTPError(response.status, payload) });
+          return;
+        }
+        let payload: unknown;
+        try {
+          payload = await response.json();
+        } catch {
+          reply({ ok: false, error: bridgeError('INTERNAL', response.status) });
+          return;
+        }
+        if (session.disposed || sessionRef.current?.id !== session.id) {
+          return;
+        }
+        const result = pluginFetchResult(payload);
+        if (!result) {
+          reply({ ok: false, error: bridgeError('INTERNAL', response.status) });
+          return;
+        }
+        reply({ ok: true, result });
+      } catch {
+        if (session.disposed || sessionRef.current?.id !== session.id) {
+          return;
+        }
+        if (timeoutSignal.aborted) {
+          reply({ ok: false, error: bridgeError('TIMEOUT') });
+          return;
+        }
+        reply({ ok: false, error: bridgeError('NETWORK_ERROR') });
+      }
       return;
     }
 
@@ -349,27 +432,40 @@ function PluginFrameAttempt({
   }, []);
 
   useEffect(() => {
-    const session = sessionRef.current;
-    const frame = iframeRef.current?.contentWindow;
-    if (!session?.ready || session.disposed || !frame) {
-      return;
-    }
-    const next = themeRef.current;
-    const previous = lastThemeRef.current;
-    if (previous && previous.theme === next.theme && previous.colorScheme === next.colorScheme) {
-      return;
-    }
-    lastThemeRef.current = next;
-    frame.postMessage(
-      {
-        protocol: PLUGIN_UI_PROTOCOL,
-        version: PLUGIN_UI_VERSION,
-        type: 'theme',
-        sessionId: session.id,
-        payload: { theme: next.theme, colorScheme: next.colorScheme },
-      },
-      '*'
-    );
+    // ThemeProvider writes the theme class in its own effect, which runs after
+    // this child effect. Read the computed values in a microtask so the class
+    // is already on <html>.
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) {
+        return;
+      }
+      const session = sessionRef.current;
+      const frame = iframeRef.current?.contentWindow;
+      if (!session?.ready || session.disposed || !frame) {
+        return;
+      }
+      const next = themeRef.current;
+      const previous = lastThemeRef.current;
+      if (previous && previous.theme === next.theme && previous.colorScheme === next.colorScheme) {
+        return;
+      }
+      const payload = themePayload();
+      lastThemeRef.current = { theme: payload.theme, colorScheme: payload.colorScheme };
+      frame.postMessage(
+        {
+          protocol: PLUGIN_UI_PROTOCOL,
+          version: PLUGIN_UI_VERSION,
+          type: 'theme',
+          sessionId: session.id,
+          payload,
+        },
+        '*'
+      );
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [resolvedTheme, colorScheme]);
 
   if (sessionQuery.isError || failed) {

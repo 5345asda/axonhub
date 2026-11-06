@@ -2,11 +2,11 @@
 
 这个目录是一个可以安装的 UI 插件，对应插件系统当前已经开放的能力：独立页面、`configSchema`、插件 GraphQL，以及本插件自己的 KV。
 
-当前构建拒绝包内的 `plugin.js`（`JS plugins are not enabled yet`）。事件和请求钩子还不能装，所以这个例子没有后端脚本。页面脚本在浏览器里跑，通过宿主的 `window.axonhub` 通信。
+这个例子只演示页面，没有 `plugin.js`。页面脚本在浏览器里跑，通过宿主的 `window.axonhub` 通信。事件插件见 [Failover Guard](../failover-guard/README.md)。
 
 ## 页面做什么
 
-- 跟随控制台的明暗主题。
+- 使用宿主推送的主题变量，跟随控制台的明暗和配色。握手完成前用 CSS 里的回退色。
 - 读取 `heading` 和 `maxNotes`。还没改过配置时，页面拿到的是 schema 里的默认值。这个例子没有 secret；当前实现会把 secret 字段以 `******` 交给页面，不给原文。
 - 列表使用 `pluginKVList(first: 100, after: ...)`，沿 `nextCursor` 分页读取，直到游标为空。
 - 用 `pluginKV` / `setPluginKV` / `deletePluginKV` 保存笔记。键形如 `note.<UUID>`，值是 JSON 字符串。能打开页面的人都可以读；写入要求当前用户有 `write_plugins`。
@@ -33,10 +33,10 @@ HTML、CSS、JS 都使用相对路径。不要写 `/assets/...` 这种站点根�
 在仓库根目录执行：
 
 ```bash
-python3 plugin/scripts/pack-plugin.py plugin/examples/notes
+go run ./plugin/scripts/pack-plugin plugin/examples/notes
 ```
 
-脚本只打包 `manifest.json` 和 `ui/`。根目录的 `README.md` 不会进包，其它路径会被拒绝。默认产物是 `plugin/examples/notes.axplugin`，这个文件已被 Git 忽略。也可以用 `-o` 指定输出路径。
+脚本打包 `manifest.json`、`ui/`，以及根目录 `plugin.js` 和它的包内相对 import。这个例子没有后端脚本，所以包里只有页面文件。根目录的 `README.md` 不会进包。默认产物是 `plugin/examples/notes.axplugin`，这个文件已被 Git 忽略。也可以用 `-o` 指定输出路径。
 
 ## 安装
 
