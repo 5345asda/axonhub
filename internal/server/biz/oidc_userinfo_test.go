@@ -137,11 +137,15 @@ func TestOIDCCallbackUserInfo(t *testing.T) {
 			signedToken, err = token.SignedString(key)
 			require.NoError(t, err)
 			svc.providers["test"] = &oidcProvider{
-				config: OIDCProvider{ID: "test", Name: "test", IssuerURL: server.URL,
+				config: OIDCProvider{
+					ID: "test", Name: "test", IssuerURL: server.URL,
 					UserInfoURL: server.URL + "/userinfo", AutoLinkByEmail: true,
-					RequireEmailVerified: true, JITEnabled: false},
-				oauth2: oauth2.Config{ClientID: "client", ClientSecret: "secret",
-					Endpoint: oauth2.Endpoint{TokenURL: server.URL + "/token"}},
+					RequireEmailVerified: true, JITEnabled: false,
+				},
+				oauth2: oauth2.Config{
+					ClientID: "client", ClientSecret: "secret",
+					Endpoint: oauth2.Endpoint{TokenURL: server.URL + "/token"},
+				},
 				verifier: oidc.NewVerifier(server.URL, &oidc.StaticKeySet{PublicKeys: []crypto.PublicKey{&key.PublicKey}}, &oidc.Config{ClientID: "client"}),
 			}
 			require.NoError(t, svc.cache.Set(ctx, "oidc_state:state", []byte("valid")))
