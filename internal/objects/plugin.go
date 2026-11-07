@@ -30,6 +30,7 @@ const (
 	ConfigTypeInteger  = "integer"
 	ConfigTypeNumber   = "number"
 	ConfigTypeBoolean  = "boolean"
+	ConfigTypeArray    = "array"
 	ConfigFormatSecret = "secret"
 
 	// MaxPluginNetworkRules is the manifest.network limit.
@@ -76,6 +77,7 @@ var (
 	configSchemaFieldNames = map[string]struct{}{
 		"type":       {},
 		"properties": {},
+		"required":   {},
 	}
 	configPropertyFieldNames = map[string]struct{}{
 		"type":        {},
@@ -86,12 +88,17 @@ var (
 		"title":       {},
 		"description": {},
 		"format":      {},
+		"items":       {},
+	}
+	configItemsFieldNames = map[string]struct{}{
+		"type": {},
 	}
 	configTypes = map[string]struct{}{
 		ConfigTypeString:  {},
 		ConfigTypeInteger: {},
 		ConfigTypeNumber:  {},
 		ConfigTypeBoolean: {},
+		ConfigTypeArray:   {},
 	}
 	networkRuleFieldNames = map[string]struct{}{
 		"regex": {},
@@ -137,13 +144,13 @@ func (r PluginNetworkRule) Grant() string {
 	return r.Exact
 }
 
-// PluginHooksSpec holds the opened request-hook booleans.
+// PluginHooksSpec holds explicitly enabled, scoped hooks.
 // response and streamChunk are presence-only until those hooks are scheduled.
 type PluginHooksSpec struct {
-	Request            bool `json:"request,omitempty"`
-	Attempt            bool `json:"attempt,omitempty"`
-	ResponsePresent    bool `json:"-"`
-	StreamChunkPresent bool `json:"-"`
+	Request            *PluginRequestHook `json:"request,omitempty"`
+	Attempt            *PluginAttemptHook `json:"attempt,omitempty"`
+	ResponsePresent    bool               `json:"-"`
+	StreamChunkPresent bool               `json:"-"`
 }
 
 // PluginUI is the opened page list. panels is presence-only.
@@ -164,6 +171,7 @@ type PluginUIPage struct {
 type PluginConfigSchema struct {
 	Type       string                          `json:"type"`
 	Properties map[string]PluginConfigProperty `json:"properties,omitempty"`
+	Required   []string                        `json:"required,omitempty"`
 }
 
 // PluginConfigProperty is one configSchema property.
@@ -176,6 +184,13 @@ type PluginConfigProperty struct {
 	Title       string   `json:"title,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Format      string   `json:"format,omitempty"`
+	// Items is set only for type array. Array items are always strings.
+	Items *PluginConfigItems `json:"items,omitempty"`
+}
+
+// PluginConfigItems describes the elements of an array property.
+type PluginConfigItems struct {
+	Type string `json:"type"`
 }
 
 // IsSecret reports whether the property is marked format secret.
@@ -362,12 +377,35 @@ func (s *PluginConfigSchema) Validate() error {
 			return err
 		}
 	}
+	seen := make(map[string]struct{}, len(s.Required))
+	for i, name := range s.Required {
+		if _, ok := s.Properties[name]; !ok {
+			return fmt.Errorf("configSchema.required[%d] %q is not a declared property", i, name)
+		}
+		if _, ok := seen[name]; ok {
+			return fmt.Errorf("configSchema.required[%d] %q is duplicated", i, name)
+		}
+		seen[name] = struct{}{}
+	}
 	return nil
 }
 
 func (p PluginConfigProperty) validate(fieldPath string) error {
 	if _, ok := configTypes[p.Type]; !ok {
-		return fmt.Errorf("%s.type must be string, integer, number, or boolean", fieldPath)
+		return fmt.Errorf("%s.type must be string, integer, number, boolean, or array", fieldPath)
+	}
+	if p.Type == ConfigTypeArray {
+		if p.Items == nil {
+			return fmt.Errorf("%s.items is required for array", fieldPath)
+		}
+		if p.Items.Type != ConfigTypeString {
+			return fmt.Errorf("%s.items.type must be string", fieldPath)
+		}
+		if p.Enum != nil {
+			return fmt.Errorf("%s.enum is not valid for array", fieldPath)
+		}
+	} else if p.Items != nil {
+		return fmt.Errorf("%s.items is only valid for array", fieldPath)
 	}
 	if p.Format != "" && p.Format != ConfigFormatSecret {
 		return fmt.Errorf("%s.format must be secret", fieldPath)
@@ -756,18 +794,16 @@ func (h *PluginHooksSpec) UnmarshalJSON(data []byte) error {
 		h.StreamChunkPresent = true
 	}
 	if value, ok := raw["request"]; ok {
-		parsed, err := decodeJSONBool(value, "hooks.request")
-		if err != nil {
+		h.Request = new(PluginRequestHook)
+		if err := json.Unmarshal(value, h.Request); err != nil {
 			return err
 		}
-		h.Request = parsed
 	}
 	if value, ok := raw["attempt"]; ok {
-		parsed, err := decodeJSONBool(value, "hooks.attempt")
-		if err != nil {
+		h.Attempt = new(PluginAttemptHook)
+		if err := json.Unmarshal(value, h.Attempt); err != nil {
 			return err
 		}
-		h.Attempt = parsed
 	}
 	return nil
 }
@@ -868,6 +904,13 @@ func (s *PluginConfigSchema) UnmarshalJSON(data []byte) error {
 		}
 		s.Type = parsed
 	}
+	if value, ok := raw["required"]; ok {
+		parsed, err := decodeJSONStringSlice(value, "configSchema.required")
+		if err != nil {
+			return err
+		}
+		s.Required = parsed
+	}
 	propsRaw, ok := raw["properties"]
 	if !ok {
 		return nil
@@ -953,6 +996,23 @@ func (p *PluginConfigProperty) unmarshalJSONAt(data []byte, fieldPath string) er
 			return err
 		}
 		p.Format = parsed
+	}
+	if value, ok := raw["items"]; ok {
+		items, err := decodeObject(value, fieldPath+".items")
+		if err != nil {
+			return err
+		}
+		if err := rejectUnknownFields(items, configItemsFieldNames, fieldPath+".items"); err != nil {
+			return err
+		}
+		p.Items = &PluginConfigItems{}
+		if itemType, ok := items["type"]; ok {
+			parsed, err := decodeJSONString(itemType, fieldPath+".items.type")
+			if err != nil {
+				return err
+			}
+			p.Items.Type = parsed
+		}
 	}
 	return nil
 }
@@ -1176,6 +1236,17 @@ func valueMatchesType(typ string, value any) bool {
 	case ConfigTypeInteger:
 		number, ok := numericValue(value)
 		return ok && isWhole(number)
+	case ConfigTypeArray:
+		items, ok := value.([]any)
+		if !ok {
+			return false
+		}
+		for _, item := range items {
+			if _, ok := item.(string); !ok {
+				return false
+			}
+		}
+		return true
 	default:
 		return false
 	}

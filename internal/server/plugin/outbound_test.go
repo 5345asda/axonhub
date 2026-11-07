@@ -162,6 +162,7 @@ func TestFetchHeadersAndBodies(t *testing.T) {
 	// Use an already elapsed deadline so this mapping test does not depend on timer scheduling.
 	ctx, cancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
 	defer cancel()
+	<-ctx.Done()
 	_, err = manager.Fetch(ctx, granted, FetchRequest{URL: "https://example.com/v1/check"})
 	require.Equal(t, hostDeadlineExceeded, fetchCode(t, err))
 }
