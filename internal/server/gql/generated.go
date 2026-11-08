@@ -347,8 +347,7 @@ type ComplexityRoot struct {
 	}
 
 	CatalogSettings struct {
-		RefreshSeconds func(childComplexity int) int
-		UpstreamURL    func(childComplexity int) int
+		UpstreamURL func(childComplexity int) int
 	}
 
 	Channel struct {
@@ -1098,7 +1097,6 @@ type ComplexityRoot struct {
 		InstallPluginFromMarket               func(childComplexity int, pluginID string, version string, grantedPermissions []string, grantedNetwork []string) int
 		LoadAPIKeyProfileTemplate             func(childComplexity int, input LoadAPIKeyProfileTemplateInput) int
 		PreviewPromptProtectionRule           func(childComplexity int, input PromptProtectionRulePreviewInput) int
-		RefreshProvidersCatalog               func(childComplexity int) int
 		RemoveUserFromProject                 func(childComplexity int, input RemoveUserFromProjectInput) int
 		ResetChannelQuotaNow                  func(childComplexity int, channelID objects.GUID) int
 		ResetClaudeCodeSafeguardsSettings     func(childComplexity int) int
@@ -2558,7 +2556,6 @@ type MutationResolver interface {
 	UpdatePassThroughSettings(ctx context.Context, input UpdatePassThroughSettingsInput) (bool, error)
 	UpdateUsageCostInjectionSettings(ctx context.Context, input UpdateUsageCostInjectionSettingsInput) (bool, error)
 	UpdateCatalogSettings(ctx context.Context, input UpdateCatalogSettingsInput) (bool, error)
-	RefreshProvidersCatalog(ctx context.Context) (*ProvidersCatalog, error)
 	ClearCache(ctx context.Context, input ClearCacheInput) (*ClearCachePayload, error)
 	UpdateClaudeCodeSafeguardsSettings(ctx context.Context, input biz.ClaudeCodeSafeguardsConfig) (bool, error)
 	ResetClaudeCodeSafeguardsSettings(ctx context.Context) (bool, error)
@@ -3753,12 +3750,6 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 
 		return e.complexity.BulkUpdateChannelOrderingResult.Updated(childComplexity), true
 
-	case "CatalogSettings.refreshSeconds":
-		if e.complexity.CatalogSettings.RefreshSeconds == nil {
-			break
-		}
-
-		return e.complexity.CatalogSettings.RefreshSeconds(childComplexity), true
 	case "CatalogSettings.upstreamURL":
 		if e.complexity.CatalogSettings.UpstreamURL == nil {
 			break
@@ -7073,12 +7064,6 @@ func (e *executableSchema) Complexity(ctx context.Context, typeName, field strin
 		}
 
 		return e.complexity.Mutation.PreviewPromptProtectionRule(childComplexity, args["input"].(PromptProtectionRulePreviewInput)), true
-	case "Mutation.refreshProvidersCatalog":
-		if e.complexity.Mutation.RefreshProvidersCatalog == nil {
-			break
-		}
-
-		return e.complexity.Mutation.RefreshProvidersCatalog(childComplexity), true
 	case "Mutation.removeUserFromProject":
 		if e.complexity.Mutation.RemoveUserFromProject == nil {
 			break
@@ -22012,35 +21997,6 @@ func (ec *executionContext) fieldContext_CatalogSettings_upstreamURL(_ context.C
 		IsResolver: false,
 		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
 			return nil, errors.New("field of type String does not have child fields")
-		},
-	}
-	return fc, nil
-}
-
-func (ec *executionContext) _CatalogSettings_refreshSeconds(ctx context.Context, field graphql.CollectedField, obj *biz.CatalogSettings) (ret graphql.Marshaler) {
-	return graphql.ResolveField(
-		ctx,
-		ec.OperationContext,
-		field,
-		ec.fieldContext_CatalogSettings_refreshSeconds,
-		func(ctx context.Context) (any, error) {
-			return obj.RefreshSeconds, nil
-		},
-		nil,
-		ec.marshalNInt2int,
-		true,
-		true,
-	)
-}
-
-func (ec *executionContext) fieldContext_CatalogSettings_refreshSeconds(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "CatalogSettings",
-		Field:      field,
-		IsMethod:   false,
-		IsResolver: false,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			return nil, errors.New("field of type Int does not have child fields")
 		},
 	}
 	return fc, nil
@@ -40424,45 +40380,6 @@ func (ec *executionContext) fieldContext_Mutation_updateCatalogSettings(ctx cont
 	return fc, nil
 }
 
-func (ec *executionContext) _Mutation_refreshProvidersCatalog(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
-	return graphql.ResolveField(
-		ctx,
-		ec.OperationContext,
-		field,
-		ec.fieldContext_Mutation_refreshProvidersCatalog,
-		func(ctx context.Context) (any, error) {
-			return ec.resolvers.Mutation().RefreshProvidersCatalog(ctx)
-		},
-		nil,
-		ec.marshalNProvidersCatalog2ᚖgithubᚗcomᚋloopljᚋaxonhubᚋinternalᚋserverᚋgqlᚐProvidersCatalog,
-		true,
-		true,
-	)
-}
-
-func (ec *executionContext) fieldContext_Mutation_refreshProvidersCatalog(_ context.Context, field graphql.CollectedField) (fc *graphql.FieldContext, err error) {
-	fc = &graphql.FieldContext{
-		Object:     "Mutation",
-		Field:      field,
-		IsMethod:   true,
-		IsResolver: true,
-		Child: func(ctx context.Context, field graphql.CollectedField) (*graphql.FieldContext, error) {
-			switch field.Name {
-			case "data":
-				return ec.fieldContext_ProvidersCatalog_data(ctx, field)
-			case "fetchedAt":
-				return ec.fieldContext_ProvidersCatalog_fetchedAt(ctx, field)
-			case "source":
-				return ec.fieldContext_ProvidersCatalog_source(ctx, field)
-			case "filtered":
-				return ec.fieldContext_ProvidersCatalog_filtered(ctx, field)
-			}
-			return nil, fmt.Errorf("no field named %q was found under type ProvidersCatalog", field.Name)
-		},
-	}
-	return fc, nil
-}
-
 func (ec *executionContext) _Mutation_clearCache(ctx context.Context, field graphql.CollectedField) (ret graphql.Marshaler) {
 	return graphql.ResolveField(
 		ctx,
@@ -53025,8 +52942,6 @@ func (ec *executionContext) fieldContext_Query_catalogSettings(_ context.Context
 			switch field.Name {
 			case "upstreamURL":
 				return ec.fieldContext_CatalogSettings_upstreamURL(ctx, field)
-			case "refreshSeconds":
-				return ec.fieldContext_CatalogSettings_refreshSeconds(ctx, field)
 			}
 			return nil, fmt.Errorf("no field named %q was found under type CatalogSettings", field.Name)
 		},
@@ -92407,7 +92322,7 @@ func (ec *executionContext) unmarshalInputUpdateCatalogSettingsInput(ctx context
 		asMap[k] = v
 	}
 
-	fieldsInOrder := [...]string{"upstreamURL", "refreshSeconds"}
+	fieldsInOrder := [...]string{"upstreamURL"}
 	for _, k := range fieldsInOrder {
 		v, ok := asMap[k]
 		if !ok {
@@ -92421,13 +92336,6 @@ func (ec *executionContext) unmarshalInputUpdateCatalogSettingsInput(ctx context
 				return it, err
 			}
 			it.UpstreamURL = data
-		case "refreshSeconds":
-			ctx := graphql.WithPathContext(ctx, graphql.NewPathWithField("refreshSeconds"))
-			data, err := ec.unmarshalOInt2ᚖint(ctx, v)
-			if err != nil {
-				return it, err
-			}
-			it.RefreshSeconds = data
 		}
 	}
 
@@ -100655,11 +100563,6 @@ func (ec *executionContext) _CatalogSettings(ctx context.Context, sel ast.Select
 			if out.Values[i] == graphql.Null {
 				out.Invalids++
 			}
-		case "refreshSeconds":
-			out.Values[i] = ec._CatalogSettings_refreshSeconds(ctx, field, obj)
-			if out.Values[i] == graphql.Null {
-				out.Invalids++
-			}
 		default:
 			panic("unknown field " + strconv.Quote(field.Name))
 		}
@@ -107296,13 +107199,6 @@ func (ec *executionContext) _Mutation(ctx context.Context, sel ast.SelectionSet)
 		case "updateCatalogSettings":
 			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
 				return ec._Mutation_updateCatalogSettings(ctx, field)
-			})
-			if out.Values[i] == graphql.Null {
-				out.Invalids++
-			}
-		case "refreshProvidersCatalog":
-			out.Values[i] = ec.OperationContext.RootResolverMiddleware(innerCtx, func(ctx context.Context) (res graphql.Marshaler) {
-				return ec._Mutation_refreshProvidersCatalog(ctx, field)
 			})
 			if out.Values[i] == graphql.Null {
 				out.Invalids++

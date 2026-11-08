@@ -4,7 +4,7 @@
 
 ## 目录
 
-- [`registry.json`](registry.json)：市场索引。AxonHub 从 `unstable` 分支的 raw URL 拉取。当前列出 Jev 请求审查和重置监控。
+- [`registry.json`](registry.json)：市场索引。AxonHub 从 `unstable` 分支的 raw URL 拉取。当前列出 Jev 请求审查、实时请求和重置监控。
 - [`../cmd/pack-plugin`](../cmd/pack-plugin)：独立 Go 模块的打包器。`go install github.com/looplj/axonhub/cmd/pack-plugin@unstable` 安装 `unstable` 分支上的当前提交。
 - [`examples/notes/`](examples/notes/README.md)：可安装的 Notes UI 插件示例。
 - [`examples/event-log/`](examples/event-log/README.md)：可安装的事件记录示例，用来确认事件已经送达。
@@ -25,6 +25,6 @@ go run -C cmd/pack-plugin . ../../plugins/examples/temperature-cap
 go run -C cmd/pack-plugin . ../../plugins/examples/notes -o /tmp/notes.axplugin
 ```
 
-默认生成插件目录旁边的 `<目录名>.axplugin`，已被 Git 忽略。输出必须在插件目录外面。包内包含 `manifest.json`、`ui/` 下的文件、根目录 `plugin.js`，以及从 `plugin.js` 静态相对 import 到的文件。根目录 README、`.DS_Store` 和 `.git` 不会进入包。安装步骤见 [Notes 示例](examples/notes/README.md#安装)、[Event Log 示例](examples/event-log/README.md#安装和验收)、[Failover Guard 示例](examples/failover-guard/README.md#安装) 和 [Star 历史示例](examples/star-history/README.md#安装)。
+默认生成插件目录旁边的 `<目录名>.axplugin`，已被 Git 忽略。输出必须在插件目录外面。包内包含 `manifest.json`、`ui/` 下的文件、根目录 `plugin.js`，以及从 `plugin.js` 静态相对 import 到的文件。其他文件（例如 README、`.git`、`.claude`、`node_modules`、测试文件）不会进入包，命令会列出被跳过的路径。安装步骤见 [Notes 示例](examples/notes/README.md#安装)、[Event Log 示例](examples/event-log/README.md#安装和验收)、[Failover Guard 示例](examples/failover-guard/README.md#安装) 和 [Star 历史示例](examples/star-history/README.md#安装)。
 
 打包器是独立模块，复制了服务端的 moejs 解析和模块链接来收集静态依赖，不执行插件代码，也不转换或合并源码。动态 `import()` 不会额外收集文件。服务端仍在安装时校验 manifest 兼容性和插件导出。
