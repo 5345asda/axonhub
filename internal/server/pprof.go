@@ -87,7 +87,7 @@ func (p *pprofServer) start(cfg Pprof) error {
 	if err := validatePprofAddr(cfg.Addr); err != nil {
 		return err
 	}
-	ln, err := net.Listen("tcp", cfg.Addr)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("listen server.pprof.addr %s: %w", cfg.Addr, err)
 	}
