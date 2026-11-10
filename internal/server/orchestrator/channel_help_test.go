@@ -49,11 +49,11 @@ func newTestLoadBalancedSelector(
 	requestService *biz.RequestService,
 ) CandidateSelector {
 	strategies := []LoadBalanceStrategy{
-		NewErrorAwareStrategy(channelService),
-		NewWeightRoundRobinStrategy(channelService),
-		NewLatencyAwareStrategy(channelService),
+		NewErrorAwareStrategy(),
+		NewWeightRoundRobinStrategy(),
+		NewLatencyAwareStrategy(),
 	}
-	loadBalancer := NewLoadBalancer(systemService, nil, strategies...)
+	loadBalancer := NewLoadBalancer(channelService, nil, strategies...)
 
 	modelService := newTestModelService(client)
 	baseSelector := NewDefaultSelector(channelService, modelService, systemService)
@@ -183,6 +183,7 @@ func getCandidateNameByID(result []*ChannelModelsCandidate, channelID int) strin
 type mockExecutor struct {
 	response      *httpclient.Response
 	streamEvents  []*httpclient.StreamEvent
+	streamHeaders http.Header
 	err           error
 	requestCalled bool
 	requestCalls  atomic.Int64
@@ -208,6 +209,10 @@ func (m *mockExecutor) DoStream(ctx context.Context, request *httpclient.Request
 	m.lastRequest = request
 	if m.err != nil {
 		return nil, m.err
+	}
+
+	if m.streamHeaders != nil {
+		request.ObserveResponseHeaders(ctx, m.streamHeaders)
 	}
 
 	return streams.SliceStream(m.streamEvents), nil

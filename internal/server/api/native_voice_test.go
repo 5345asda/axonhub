@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -28,10 +29,50 @@ func (t nativeVoiceSelectionTracker) IncrementChannelSelection(channelID int) {
 	t[channelID]++
 }
 
-type nativeVoiceRetryPolicyProvider struct{}
+type nativeVoiceMetricsStub struct {
+	metrics *biz.AggregatedMetrics
+	err     error
+}
 
-func (nativeVoiceRetryPolicyProvider) RetryPolicyOrDefault(context.Context) *biz.RetryPolicy {
-	return &biz.RetryPolicy{}
+func (s nativeVoiceMetricsStub) GetChannelMetrics(context.Context, int) (*biz.AggregatedMetrics, error) {
+	return s.metrics, s.err
+}
+
+func TestNativeVoiceMetricsProviderUsesNativeSelectionHistory(t *testing.T) {
+	shared := &biz.AggregatedMetrics{}
+	shared.FailureCount = 3
+	shared.NonStreamingLatencyEWMA = 42
+	nativeTracker := orchestrator.NewChannelRequestTracker()
+	nativeTracker.IncrementChannelSelection(7)
+	nativeTracker.IncrementChannelSelection(7)
+
+	provider := nativeVoiceMetricsProvider{
+		channelMetrics:    nativeVoiceMetricsStub{metrics: shared},
+		nativeLoadTracker: nativeTracker,
+	}
+	metrics, err := provider.GetChannelMetrics(context.Background(), 7)
+
+	require.NoError(t, err)
+	require.NotSame(t, shared, metrics)
+	require.Equal(t, int64(3), metrics.FailureCount)
+	require.Equal(t, 42.0, metrics.NonStreamingLatencyEWMA)
+	require.Equal(t, int64(2), metrics.RequestCount)
+	require.Zero(t, shared.RequestCount)
+}
+
+func TestNativeVoiceMetricsProviderFallsBackToNativeSelectionHistory(t *testing.T) {
+	nativeTracker := orchestrator.NewChannelRequestTracker()
+	nativeTracker.IncrementChannelSelection(11)
+
+	provider := nativeVoiceMetricsProvider{
+		channelMetrics:    nativeVoiceMetricsStub{err: errors.New("metrics unavailable")},
+		nativeLoadTracker: nativeTracker,
+	}
+	metrics, err := provider.GetChannelMetrics(context.Background(), 11)
+
+	require.NoError(t, err)
+	require.Equal(t, int64(1), metrics.RequestCount)
+	require.Zero(t, metrics.FailureCount)
 }
 
 func TestExtractNativeVoiceRequestModelReadsModelAfterLargePayload(t *testing.T) {
@@ -220,7 +261,7 @@ func TestResolveNativeVoiceTargetsUsesExactModelProtocolForSharedBailianPath(t *
 		Credentials:     objects.ChannelCredentials{APIKey: "provider-key"},
 	}}
 	tracker := nativeVoiceSelectionTracker{}
-	loadBalancer := orchestrator.NewLoadBalancer(nativeVoiceRetryPolicyProvider{}, tracker)
+	loadBalancer := orchestrator.NewLoadBalancer(nil, tracker)
 	selector := voice.NewCandidateSelector(func() []*biz.Channel { return []*biz.Channel{primary, fallback} }, loadBalancer.SortAllWithoutTracking)
 	req := httptest.NewRequest(http.MethodGet, "/api-ws/v1/realtime?model=tts-model", nil)
 
@@ -256,7 +297,7 @@ func TestResolveNativeVoiceTargetsRejectsSharedBailianPathWithoutExactModelProto
 		Credentials: objects.ChannelCredentials{APIKey: "provider-key"},
 	}}
 	tracker := nativeVoiceSelectionTracker{}
-	loadBalancer := orchestrator.NewLoadBalancer(nativeVoiceRetryPolicyProvider{}, tracker)
+	loadBalancer := orchestrator.NewLoadBalancer(nil, tracker)
 	selector := voice.NewCandidateSelector(func() []*biz.Channel { return []*biz.Channel{channel} }, loadBalancer.SortAllWithoutTracking)
 	req := httptest.NewRequest(http.MethodGet, "/api-ws/v1/realtime?model=tts-model", nil)
 
@@ -290,7 +331,7 @@ func TestResolveNativeVoiceTargetsRejectsSharedBailianPathWhenModelMapsToBothPro
 		Credentials: objects.ChannelCredentials{APIKey: "provider-key"},
 	}}
 	tracker := nativeVoiceSelectionTracker{}
-	loadBalancer := orchestrator.NewLoadBalancer(nativeVoiceRetryPolicyProvider{}, tracker)
+	loadBalancer := orchestrator.NewLoadBalancer(nil, tracker)
 	selector := voice.NewCandidateSelector(func() []*biz.Channel { return []*biz.Channel{channel} }, loadBalancer.SortAllWithoutTracking)
 	req := httptest.NewRequest(http.MethodGet, "/api-ws/v1/realtime?model=shared-model", nil)
 

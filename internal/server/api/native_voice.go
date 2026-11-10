@@ -30,6 +30,31 @@ type NativeVoiceHandlersParams struct {
 	ChannelLimiterManager *orchestrator.ChannelLimiterManager
 }
 
+// nativeVoiceMetricsProvider combines shared channel health metrics with the
+// native relay's independent selection history. Native voice must not let its
+// weighted round-robin state be affected by ordinary LLM traffic.
+type nativeVoiceMetricsProvider struct {
+	channelMetrics    orchestrator.ChannelMetricsProvider
+	nativeLoadTracker *orchestrator.ChannelRequestTracker
+}
+
+func (p nativeVoiceMetricsProvider) GetChannelMetrics(ctx context.Context, channelID int) (*biz.AggregatedMetrics, error) {
+	metrics := &biz.AggregatedMetrics{}
+	if p.channelMetrics != nil {
+		snapshot, err := p.channelMetrics.GetChannelMetrics(ctx, channelID)
+		if err == nil && snapshot != nil {
+			// ChannelService owns its snapshot, so native routing uses a copy.
+			metrics = snapshot.Clone()
+		}
+	}
+
+	if p.nativeLoadTracker != nil {
+		metrics.RequestCount = p.nativeLoadTracker.GetRequestCount(channelID)
+	}
+
+	return metrics, nil
+}
+
 func readNativeVoiceRequestBody(req *http.Request) ([]byte, error) {
 	if req == nil || req.Body == nil {
 		return nil, nil
@@ -73,16 +98,18 @@ type NativeVoiceHandlers struct {
 func NewNativeVoiceHandlers(params NativeVoiceHandlersParams) *NativeVoiceHandlers {
 	channelService := params.ChannelService
 	requestService := params.RequestService
-	systemService := params.SystemService
 
 	rateLimitTracker := orchestrator.NewChannelRequestTracker()
 	nativeLoadTracker := orchestrator.NewChannelRequestTracker()
 	loadBalancer := orchestrator.NewLoadBalancer(
-		systemService,
+		nativeVoiceMetricsProvider{
+			channelMetrics:    channelService,
+			nativeLoadTracker: nativeLoadTracker,
+		},
 		nativeLoadTracker,
-		orchestrator.NewErrorAwareStrategy(channelService),
-		orchestrator.NewWeightRoundRobinStrategy(nativeLoadTracker),
-		orchestrator.NewLatencyAwareStrategy(channelService),
+		orchestrator.NewErrorAwareStrategy(),
+		orchestrator.NewWeightRoundRobinStrategy(),
+		orchestrator.NewLatencyAwareStrategy(),
 		orchestrator.NewRateLimitAwareStrategy(rateLimitTracker, params.ChannelLimiterManager),
 	)
 

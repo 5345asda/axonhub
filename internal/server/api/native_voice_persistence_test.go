@@ -80,6 +80,7 @@ func TestServeNativeVoiceHTTPPersistsFailedBusinessAttempt(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, requests, 1)
 	require.Equal(t, entrequest.StatusFailed, requests[0].Status)
+	require.Equal(t, channelRow.ID, requests[0].ChannelID)
 	require.Equal(t, protocol.APIFormat, requests[0].Format)
 	require.Equal(t, "speech-2.8-hd", requests[0].ModelID)
 	require.JSONEq(t, body, string(requests[0].RequestBody))
@@ -214,6 +215,7 @@ func TestServeNativeVoiceHTTPPersistsTransportFailure(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, requests, 1)
 	require.Equal(t, entrequest.StatusFailed, requests[0].Status)
+	require.Equal(t, channelRow.ID, requests[0].ChannelID)
 
 	executions, err := client.RequestExecution.Query().All(ctx)
 	require.NoError(t, err)
@@ -353,6 +355,7 @@ func TestServeNativeVoiceHTTPWritesBeforePersistingExecutions(t *testing.T) {
 	require.Equal(t, http.StatusOK, w.Code)
 	request, err := client.Request.Query().Only(ctx)
 	require.NoError(t, err)
+	require.Equal(t, channelRow.ID, request.ChannelID)
 	require.Equal(t, "success", nativeVoiceStoredHeader(t, request.ResponseHeaders, "X-Provider-Request-ID"))
 	execution, err := client.RequestExecution.Query().Only(ctx)
 	require.NoError(t, err)
