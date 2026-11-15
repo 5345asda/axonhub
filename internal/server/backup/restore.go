@@ -1061,6 +1061,11 @@ func (svc *BackupService) restoreUsageRequests(
 			continue
 		}
 
+		requestBody := reqData.RequestBody
+		bodyPlan := biz.PrepareChunkedRequestBody(requestBody)
+		if bodyPlan != nil {
+			requestBody = bodyPlan.Manifest
+		}
 		created, err := db.Request.Create().
 			SetCreatedAt(reqData.CreatedAt).
 			SetUpdatedAt(reqData.UpdatedAt).
@@ -1068,7 +1073,8 @@ func (svc *BackupService) restoreUsageRequests(
 			SetSource(reqData.Source).
 			SetModelID(reqData.ModelID).
 			SetFormat(reqData.Format).
-			SetRequestBody(reqData.RequestBody).
+			SetRequestBody(requestBody).
+			SetRequestBodyChunked(bodyPlan != nil).
 			SetStatus(reqData.Status).
 			SetStream(reqData.Stream).
 			SetClientIP(reqData.ClientIP).
@@ -1090,6 +1096,11 @@ func (svc *BackupService) restoreUsageRequests(
 			Save(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to restore usage request %d: %w", oldID, err)
+		}
+		if bodyPlan != nil {
+			if err := bodyPlan.Save(ctx, db, projectID, created.ID, 0); err != nil {
+				return nil, fmt.Errorf("failed to restore usage request body %d: %w", oldID, err)
+			}
 		}
 
 		idMap[oldID] = created.ID
