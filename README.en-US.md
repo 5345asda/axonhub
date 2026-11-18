@@ -29,7 +29,7 @@
 
 <table width="100%">
   <tr>
-    <td width="100%" align="center" valign="top">
+    <td width="50%" align="center" valign="top">
       <a href="https://apikey.fun/register?aff=axonhub" target="_blank">
         <img src="docs/sponsors/apikey-fun.png" alt="APIKEY.FUN" height="50"/>
         <br/>
@@ -44,6 +44,24 @@
         APIKEY.FUN is a professional enterprise-grade AI API relay service committed to providing enterprises and individual developers with stable, efficient, and cost-effective access to AI model APIs.<br/>
         The platform supports popular models including Claude, OpenAI, and Gemini, with prices as low as 7% of the official price.<br/>
         AxonHub users who <a href="https://apikey.fun/register?aff=axonhub" target="_blank">register through the exclusive link</a> can enjoy a permanent discount of up to 5% on recharges.
+      </div>
+    </td>
+    <td width="50%" align="center" valign="top">
+      <a href="https://noonoo.ai/login?aff=Y3u6" target="_blank">
+        <img src="docs/sponsors/noonoo-logo.png" alt="noonoo.ai" height="50"/>
+        <br/>
+        <strong>noonoo.ai</strong>
+      </a>
+      <div align="center">
+        <a href="https://noonoo.ai/login?aff=Y3u6" target="_blank">
+          <img src="docs/sponsors/noonoo-banner.png" alt="noonoo.ai" width="100%"/>
+        </a>
+      </div>
+      <div align="left">
+        noonoo.ai provides cost-effective, stable, and reliable AI API services, with one account for Claude, GPT, Gemini, and other models across text, coding, and image generation.<br/>
+        Compatible with OpenAI, Anthropic, and Gemini APIs, it fits into existing applications and development workflows without separate subscriptions for each model.<br/>
+        Fixed, transparent pricing means no load-based price changes or hidden billing multipliers. Multiple payment methods are supported, and signup requires only an email address.<br/>
+        <a href="https://noonoo.ai/login?aff=Y3u6" target="_blank">Register through the dedicated link</a> to get started with one-stop AI API access.
       </div>
     </td>
   </tr>
@@ -150,9 +168,9 @@ For detailed technical documentation, API references, architecture design, and m
 
 ## 🎯 Demo
 
-Try AxonHub live at our [demo instance](https://axonhub.onrender.com)!
+Try AxonHub live at our [demo instance](https://axonhub.reveric.app)!
 
-**Note**：The demo instance currently configures Zhipu and OpenRouter free models.
+**Note**: The demo instance is configured with free models from OpenRouter.
 
 ### Demo Account
 
@@ -332,8 +350,6 @@ For detailed development instructions, architecture design, and contribution gui
 - 🌐 [gin-gonic/gin](https://github.com/gin-gonic/gin) - HTTP framework
 - 🗄️ [ent/ent](https://github.com/ent/ent) - ORM framework
 - 🔧 [air-verse/air](https://github.com/air-verse/air) - Auto reload Go service
-- ☁️ [Render](https://render.com) - Free cloud deployment platform for hosting our demo
-- 🗃️ [TiDB Cloud](https://www.pingcap.com/tidb-cloud/) - Serverless database platform for demo deployment
 
 ---
 
