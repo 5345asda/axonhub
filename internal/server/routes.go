@@ -154,7 +154,8 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 		// Playground API with channel specification support
 		adminGroup.POST(
 			"/playground/chat",
-			middleware.WithTimeout(server.Config.LLMRequestTimeout),
+			middleware.WithLLMTimeout(server.Config.LLMRequestTimeout, server.Config.LLMStreamRequestTimeout),
+			middleware.WithStreamIdleTimeout(server.Config.LLMStreamIdleTimeout),
 			middleware.WithSource(request.SourcePlayground),
 			handlers.Playground.ChatCompletion,
 		)
@@ -222,6 +223,7 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 	registerCodexRoutes(server, handlers, services)
 
 	apiMiddlewares := []gin.HandlerFunc{
+		middleware.WithStreamIdleTimeout(server.Config.LLMStreamIdleTimeout),
 		middleware.WithIPBlocklist(services.SystemService),
 		middleware.WithAPIKeyConfig(services.AuthService, nil),
 		middleware.WithSource(request.SourceAPI),
@@ -229,14 +231,14 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 		middleware.WithTrace(server.Config.Trace, services.TraceService),
 	}
 	apiGroup := server.Group("/", append([]gin.HandlerFunc{
-		middleware.WithTimeout(server.Config.LLMRequestTimeout),
+		middleware.WithLLMTimeout(server.Config.LLMRequestTimeout, server.Config.LLMStreamRequestTimeout),
 	}, apiMiddlewares...)...)
 
 	// WebSocket mode owns a long-lived connection and applies its processing
 	// timeout per response.create event, so it must not inherit the ordinary
 	// single-request timeout from apiGroup.
 	responsesWebSocketGroup := server.Group("/", apiMiddlewares...)
-	responsesWebSocketGroup.GET("/v1/responses", handlers.OpenAI.CreateResponseWebSocketWithTrace(server.Config.LLMRequestTimeout, server.Config.Trace, services.TraceService))
+	responsesWebSocketGroup.GET("/v1/responses", handlers.OpenAI.CreateResponseWebSocketWithTrace(server.Config.LLMStreamRequestTimeout, server.Config.Trace, services.TraceService))
 	api.RegisterNativeVoiceHTTPRoutes(apiGroup, handlers.NativeVoice)
 	api.RegisterNativeVoiceWebSocketRoutes(responsesWebSocketGroup, handlers.NativeVoice)
 
@@ -304,7 +306,8 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 		}
 
 		geminiGroup := server.Group("/gemini/:gemini-api-version",
-			middleware.WithTimeout(server.Config.LLMRequestTimeout),
+			middleware.WithLLMTimeout(server.Config.LLMRequestTimeout, server.Config.LLMStreamRequestTimeout),
+			middleware.WithStreamIdleTimeout(server.Config.LLMStreamIdleTimeout),
 			middleware.WithIPBlocklist(services.SystemService),
 			middleware.WithGeminiKeyAuth(services.AuthService),
 			middleware.WithSource(request.SourceAPI),
@@ -316,7 +319,8 @@ func SetupRoutes(server *Server, handlers Handlers, client *ent.Client, services
 
 		// Alias for Gemini API
 		geminiAliasGroup := server.Group("/v1beta",
-			middleware.WithTimeout(server.Config.LLMRequestTimeout),
+			middleware.WithLLMTimeout(server.Config.LLMRequestTimeout, server.Config.LLMStreamRequestTimeout),
+			middleware.WithStreamIdleTimeout(server.Config.LLMStreamIdleTimeout),
 			middleware.WithIPBlocklist(services.SystemService),
 			middleware.WithGeminiKeyAuth(services.AuthService),
 			middleware.WithSource(request.SourceAPI),

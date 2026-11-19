@@ -19,6 +19,7 @@ import (
 	entprivacy "github.com/looplj/axonhub/internal/ent/privacy"
 	"github.com/looplj/axonhub/internal/log"
 	"github.com/looplj/axonhub/internal/server/biz"
+	"github.com/looplj/axonhub/internal/server/middleware"
 	"github.com/looplj/axonhub/internal/server/orchestrator"
 	"github.com/looplj/axonhub/internal/server/plugin"
 	"github.com/looplj/axonhub/internal/tracing"
@@ -383,23 +384,23 @@ func (handlers *OpenAIHandlers) CreateResponse(c *gin.Context) {
 
 // CreateResponseWebSocket preserves the original handler contract for callers
 // that do not provide API-key/model trace persistence.
-func (handlers *OpenAIHandlers) CreateResponseWebSocket(requestTimeout time.Duration) gin.HandlerFunc {
-	return handlers.createResponseWebSocket(requestTimeout, tracing.Config{}, nil)
+func (handlers *OpenAIHandlers) CreateResponseWebSocket(streamTimeout time.Duration) gin.HandlerFunc {
+	return handlers.createResponseWebSocket(streamTimeout, tracing.Config{}, nil)
 }
 
 // CreateResponseWebSocketWithTrace enables API-key/model trace binding for the
 // production route while keeping the legacy helper usable by isolated tests.
-func (handlers *OpenAIHandlers) CreateResponseWebSocketWithTrace(requestTimeout time.Duration, traceConfig tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
-	return handlers.createResponseWebSocket(requestTimeout, traceConfig, traceService)
+func (handlers *OpenAIHandlers) CreateResponseWebSocketWithTrace(streamTimeout time.Duration, traceConfig tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
+	return handlers.createResponseWebSocket(streamTimeout, traceConfig, traceService)
 }
 
-func (handlers *OpenAIHandlers) createResponseWebSocket(requestTimeout time.Duration, traceConfig tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
+func (handlers *OpenAIHandlers) createResponseWebSocket(streamTimeout time.Duration, traceConfig tracing.Config, traceService *biz.TraceService) gin.HandlerFunc {
 	orch := handlers.ResponseCompletionHandlers.ChatCompletionOrchestrator
 	traceBinder := newAPIKeyModelTraceBinder(traceConfig, traceService)
 	return func(c *gin.Context) {
 		serveResponsesWebSocket(
 			c,
-			requestTimeout,
+			streamTimeout,
 			orch.Process,
 			func(ctx context.Context, err error) *httpclient.Error {
 				return transformOrchestratorError(ctx, err, orch)
@@ -504,6 +505,8 @@ func (handlers *OpenAIHandlers) CreateImageVariation(c *gin.Context) {
 }
 
 func (handlers *OpenAIHandlers) CreateVideo(c *gin.Context) {
+	cancel := middleware.SelectLLMTimeout(c, false)
+	defer cancel()
 	ctx := c.Request.Context()
 
 	genericReq, err := httpclient.ReadHTTPRequest(c.Request)
